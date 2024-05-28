@@ -3,6 +3,7 @@
 	"Bans": [],
 	"LetThemLurk": false,
 	"ListenAddress": ":8089",
+	"AccessLink": "http://127.0.0.1:8089",
 	"LogFile": "",
 	"LogLevel": "debug",
 	"MaxMessageCount": 300,
