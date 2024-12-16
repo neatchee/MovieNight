@@ -2,18 +2,20 @@
 
 
 function initPlayer() {
-    if (!flvjs.isSupported()) {
-        console.warn('flvjs not supported');
+    if (!mpegts.isSupported()) {
+        console.warn('mpegts not supported');
         return;
     }
 
     let videoElement = document.querySelector('#videoElement');
-    let flvPlayer = flvjs.createPlayer({
+    let flvPlayer = mpegts.createPlayer({
         type: 'flv',
         url: '/live',
+	headers: {"content-lenght: 0"}
+    }, {
         isLive: true,
-        hasAudio: true,
-        hasVideo: true
+        liveBufferLatencyChasing: true,
+        autoCleanupSourceBuffer: true,
     });
     flvPlayer.attachMediaElement(videoElement);
     flvPlayer.load();
