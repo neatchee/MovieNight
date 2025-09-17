@@ -21,6 +21,7 @@ import (
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format/flv"
 	"github.com/nareix/joy4/format/rtmp"
+	"github.com/nareix/joy4/format/ts"
 )
 
 var (
@@ -559,7 +560,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(playlistContent))
 }
 
-// HLS segment handler (simplified - redirects to live stream)
+// HLS segment handler
 func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	parts := strings.Split(path, "_")
@@ -585,7 +586,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// For simplified implementation, serve the live stream as TS format
+	// Serve proper TS format for HLS compatibility
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "max-age=10")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -594,14 +595,15 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	flusher := w.(http.Flusher)
 	flusher.Flush()
 	
-	muxer := flv.NewMuxerWriteFlusher(writeFlusher{httpflusher: flusher, Writer: w})
+	// Use TS muxer instead of FLV for proper HLS segment format
+	tsMuxer := ts.NewMuxer(writeFlusher{httpflusher: flusher, Writer: w})
 	cursor := ch.que.Latest()
 	
 	session, _ := sstore.Get(r, "moviesession")
 	stats.addViewer(session.ID)
-	err = avutil.CopyFile(muxer, cursor)
+	err = avutil.CopyFile(tsMuxer, cursor)
 	if err != nil {
-		common.LogErrorf("Could not copy video to HLS segment connection: %v\n", err)
+		common.LogErrorf("Could not copy video to HLS TS segment connection: %v\n", err)
 	}
 	stats.removeViewer(session.ID)
 }
