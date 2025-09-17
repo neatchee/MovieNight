@@ -416,13 +416,22 @@ function tryMpegTSPlayer(videoElement) {
             return false;
         }
 
+        // Detect Chrome browser for stricter MediaSource handling
+        const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edg');
+        
         const flvPlayer = mpegts.createPlayer({
             type: 'flv',
             url: '/live'
         }, {
             isLive: true,
-            liveBufferLatencyChasing: true,
-            autoCleanupSourceBuffer: true,
+            liveBufferLatencyChasing: !isChrome, // Disable for Chrome to prevent seek conflicts
+            autoCleanupSourceBuffer: false,
+            enableWorker: false,
+            reuseRedirectedURL: true,
+            deferLoadAfterSourceOpen: false,
+            fixAudioTimestampGap: false,
+            enableStashBuffer: !isChrome, // Disable stash buffer for Chrome
+            stashInitialSize: isChrome ? 0 : undefined, // Minimize buffering for Chrome
         });
         
         flvPlayer.attachMediaElement(videoElement);
@@ -459,8 +468,54 @@ function destroyCurrentPlayer() {
                 currentPlayer.instance.destroy();
                 console.log('HLS player destroyed and cleaned up');
             } else if (currentPlayer.type === 'mpegts') {
-                currentPlayer.instance.destroy();
-                console.log('MPEG-TS player destroyed and cleaned up');
+                // Detect Chrome for more aggressive cleanup handling
+                const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edg');
+                
+                // Proper MPEG-TS cleanup sequence to prevent SourceBuffer abort issues
+                try {
+                    // First pause to stop any ongoing operations  
+                    currentPlayer.instance.pause();
+                    
+                    // For Chrome, add extra delay and more cautious cleanup
+                    if (isChrome) {
+                        // Wait longer for Chrome to complete any pending operations
+                        setTimeout(() => {
+                            try {
+                                currentPlayer.instance.unload();
+                                // Longer delay for Chrome before destroy
+                                setTimeout(() => {
+                                    try {
+                                        currentPlayer.instance.destroy();
+                                        console.log('MPEG-TS player destroyed and cleaned up (Chrome)');
+                                    } catch (e) {
+                                        console.warn('Error during delayed Chrome MPEG-TS destroy:', e);
+                                    }
+                                }, 200);
+                            } catch (e) {
+                                console.warn('Error during Chrome MPEG-TS unload:', e);
+                            }
+                        }, 150);
+                    } else {
+                        // Standard cleanup for other browsers
+                        currentPlayer.instance.unload();
+                        setTimeout(() => {
+                            try {
+                                currentPlayer.instance.destroy();
+                                console.log('MPEG-TS player destroyed and cleaned up');
+                            } catch (e) {
+                                console.warn('Error during delayed MPEG-TS destroy:', e);
+                            }
+                        }, 100);
+                    }
+                } catch (e) {
+                    console.warn('Error during MPEG-TS cleanup:', e);
+                    // Fallback - try to destroy immediately
+                    try {
+                        currentPlayer.instance.destroy();
+                    } catch (e2) {
+                        console.warn('Error during fallback MPEG-TS destroy:', e2);
+                    }
+                }
             }
         } catch (error) {
             console.error('Error destroying player:', error);
