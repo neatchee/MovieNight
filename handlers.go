@@ -660,7 +660,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	ch := channels["live"]
 	l.RUnlock()
 
-	// Comprehensive validation with nil checks to prevent segfaults
+	// Comprehensive validation with nil checks
 	if ch == nil {
 		common.LogInfoln("HLS segment request for non-existent channel")
 		w.WriteHeader(http.StatusNotFound)
@@ -696,41 +696,42 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set headers before any operations that might fail
+	// Set headers for FAST streaming - no blocking
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "max-age=10")
+	w.Header().Set("Cache-Control", "no-cache") // Don't cache live segments
+	w.Header().Set("Transfer-Encoding", "chunked") // Enable chunked transfer
 	w.WriteHeader(http.StatusOK)
 
-	// Get HTTP flusher - this needs to be checked for nil to prevent segfaults
+	// Get flusher for immediate response
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		common.LogErrorln("ResponseWriter does not support flushing")
 		return
 	}
 
-	// Create context with timeout to prevent infinite streaming
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(HLSSegmentDuration+2)*time.Second)
+	// Use a VERY short timeout to prevent blocking - this is key to eliminating hitches
+	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second) // Just 1 second!
 	defer cancel()
 
-	// Create write flusher with comprehensive nil protection and context awareness
+	// Create write flusher with immediate flushing
 	wf := createProtectedWriteFlusher(w, flusher, ctx)
 
-	// Use TS muxer instead of FLV to fix fragParsingError
+	// Use TS muxer for proper HLS segment format
 	tsMuxer := ts.NewMuxer(wf)
 	if tsMuxer == nil {
 		common.LogErrorln("Failed to create TS muxer")
 		return
 	}
 
-	// Get cursor with nil protection
+	// Get cursor positioned to the latest stream data
 	cursor := ch.que.Latest()
 	if cursor == nil {
 		common.LogErrorln("Failed to get latest cursor from queue")
 		return
 	}
 
-	// Stream video data with connection monitoring
+	// Copy stream data with aggressive timeout to prevent hitching
 	done := make(chan error, 1)
 
 	go func() {
@@ -738,50 +739,37 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 			if r := recover(); r != nil {
 				common.LogErrorf("Recovered from panic in HLS segment handler: %v\n", r)
 				done <- fmt.Errorf("panic recovered: %v", r)
-				return
 			}
 		}()
 
-		// Monitor context during copy operation
-		copyCtx, copyCancel := context.WithCancel(ctx)
-		defer copyCancel()
-
-		// Start the copy operation in a separate goroutine
-		copyDone := make(chan error, 1)
-		go func() {
-			copyDone <- avutil.CopyFile(tsMuxer, cursor)
-		}()
-
-		// Monitor for context cancellation or copy completion
-		select {
-		case err := <-copyDone:
-			done <- err
-		case <-copyCtx.Done():
-			done <- copyCtx.Err()
-		}
+		// Copy with immediate timeout
+		done <- avutil.CopyFile(tsMuxer, cursor)
 	}()
 
-	// Wait for either completion, timeout, or client disconnect
+	// Wait with AGGRESSIVE timeout to prevent any blocking/hitching
 	select {
 	case err := <-done:
-		if err != nil {
-			if !isConnectionClosedError(err) {
-				common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
-			}
-		}
-		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("HLS segment %d completed\n", segmentNum)
+		if err != nil && !isConnectionClosedError(err) {
+			common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
 		}
 	case <-ctx.Done():
-		if ctx.Err() == context.DeadlineExceeded {
-			if settings != nil && settings.HLSDebugLogging {
-				common.LogInfof("HLS segment %d timed out\n", segmentNum)
-			}
-		} else {
-			if settings != nil && settings.HLSDebugLogging {
-				common.LogInfof("HLS segment %d cancelled (client disconnected)\n", segmentNum)
-			}
+		// This is EXPECTED for live streaming - we timeout quickly to prevent hitching
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS segment %d fast timeout (prevents hitching)\n", segmentNum)
 		}
+	case <-time.After(500 * time.Millisecond): // Emergency timeout even shorter
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS segment %d emergency timeout\n", segmentNum)
+		}
+	}
+
+	// Always flush the response to send partial data immediately
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogInfof("HLS segment %d served (non-blocking)\n", segmentNum)
 	}
 }
 
