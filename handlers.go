@@ -102,17 +102,29 @@ func (s *TSSegmenter) Start() {
 
 // segmentLoop runs in background and creates complete TS segments
 func (s *TSSegmenter) segmentLoop() {
-	segmentStartTime := time.Now()
-	currentSegmentIndex := uint64(0)
-	
 	for s.active {
-		// Check if it's time to create a new segment
-		if time.Since(segmentStartTime).Seconds() >= HLSSegmentDuration {
-			s.createCompleteSegment(currentSegmentIndex, segmentStartTime)
+		// Get the current segment index that should be created
+		s.hlsData.RLock()
+		expectedSegmentIndex := s.hlsData.mediaSequence + uint64(len(s.hlsData.segments))
+		lastSegmentTime := s.hlsData.lastSegmentTime
+		s.hlsData.RUnlock()
+		
+		// Check if it's time to create a new segment based on the HLS data timing
+		if time.Since(lastSegmentTime).Seconds() >= HLSSegmentDuration {
+			// Only create if this segment doesn't already exist
+			s.hlsData.RLock()
+			segmentExists := false
+			for _, seg := range s.hlsData.segments {
+				if seg.Index == expectedSegmentIndex {
+					segmentExists = true
+					break
+				}
+			}
+			s.hlsData.RUnlock()
 			
-			// Start new segment
-			currentSegmentIndex++
-			segmentStartTime = time.Now()
+			if !segmentExists {
+				s.createCompleteSegment(expectedSegmentIndex, lastSegmentTime)
+			}
 		}
 		
 		// Small delay between segment creation checks
@@ -164,6 +176,15 @@ func (s *TSSegmenter) createCompleteSegment(index uint64, startTime time.Time) {
 	// Only store the segment if we have actual data
 	if segmentBuffer.Len() > 0 {
 		s.storeCompleteSegment(index, segmentBuffer.Bytes(), startTime)
+		
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("TS Segmenter: Created segment %d (%d bytes) at time %v\n", 
+				index, segmentBuffer.Len(), startTime)
+		}
+	} else {
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("TS Segmenter: No data for segment %d, skipping\n", index)
+		}
 	}
 }
 
@@ -184,10 +205,12 @@ func (s *TSSegmenter) storeCompleteSegment(index uint64, data []byte, startTime 
 	}
 	s.hlsData.segmentFiles[index] = segmentFile
 	
-	// Mark corresponding segment as ready in playlist
+	// Mark corresponding segment as ready in playlist ONLY if it exists
+	segmentFound := false
 	for i := range s.hlsData.segments {
 		if s.hlsData.segments[i].Index == index {
 			s.hlsData.segments[i].Ready = true
+			segmentFound = true
 			break
 		}
 	}
@@ -197,7 +220,8 @@ func (s *TSSegmenter) storeCompleteSegment(index uint64, data []byte, startTime 
 	s.cleanupOldSegments()
 	
 	if settings != nil && settings.HLSDebugLogging {
-		common.LogInfof("TS Segmenter: Stored complete segment %d (%d bytes)\n", index, len(segmentFile.Data))
+		common.LogInfof("TS Segmenter: Stored complete segment %d (%d bytes), manifest updated: %t\n", 
+			index, len(segmentFile.Data), segmentFound)
 	}
 }
 
@@ -210,11 +234,19 @@ func (s *TSSegmenter) cleanupOldSegments() {
 		return
 	}
 	
-	// Keep only segments within the window
-	oldestToKeep := s.hlsData.mediaSequence
+	// Get the set of valid segment indexes from the current manifest
+	validIndexes := make(map[uint64]bool)
+	for _, seg := range s.hlsData.segments {
+		validIndexes[seg.Index] = true
+	}
+	
+	// Remove segment files that are not in the current manifest
 	for index := range s.hlsData.segmentFiles {
-		if index < oldestToKeep {
+		if !validIndexes[index] {
 			delete(s.hlsData.segmentFiles, index)
+			if settings != nil && settings.HLSDebugLogging {
+				common.LogInfof("TS Segmenter: Cleaned up old segment file %d\n", index)
+			}
 		}
 	}
 }
@@ -760,6 +792,7 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 	playlist.SeqNo = ch.hlsData.mediaSequence
 
 	// Add only ready segments to playlist - HLS compliance!
+	readySegmentCount := 0
 	for _, segment := range ch.hlsData.segments {
 		// Only include complete, ready segments in the manifest
 		if segment.Ready {
@@ -769,6 +802,14 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			readySegmentCount++
+		}
+	}
+	
+	// Validate that we have at least some ready segments for a live stream
+	if readySegmentCount == 0 && len(ch.hlsData.segments) > 0 {
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS: No ready segments available yet (total segments: %d)\n", len(ch.hlsData.segments))
 		}
 	}
 
@@ -785,8 +826,14 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if settings != nil && settings.HLSDebugLogging {
-		common.LogInfof("Generated HLS playlist for live: %d segments, seq: %d\n",
-			len(ch.hlsData.segments), ch.hlsData.mediaSequence)
+		common.LogInfof("Generated HLS playlist for live: %d total segments, %d ready segments, seq: %d\n",
+			len(ch.hlsData.segments), readySegmentCount, ch.hlsData.mediaSequence)
+		
+		// Log segment details for debugging
+		for i, seg := range ch.hlsData.segments {
+			common.LogInfof("  Segment %d: Index=%d, URL=%s, Ready=%t\n", 
+				i, seg.Index, seg.URL, seg.Ready)
+		}
 	}
 }
 
@@ -795,10 +842,13 @@ func updateHLSSegments(hlsData *HLSData) {
 
 	// Check if it's time for a new segment
 	if now.Sub(hlsData.lastSegmentTime).Seconds() >= HLSSegmentDuration {
+		// Calculate the next segment index
+		nextSegmentIndex := hlsData.mediaSequence + uint64(len(hlsData.segments))
+		
 		// Add new segment (initially not ready until segmenter creates complete file)
 		newSegment := HLSSegment{
-			Index:     hlsData.mediaSequence + uint64(len(hlsData.segments)),
-			URL:       fmt.Sprintf("/live_segment_%d.ts", hlsData.mediaSequence+uint64(len(hlsData.segments))),
+			Index:     nextSegmentIndex,
+			URL:       fmt.Sprintf("/live_segment_%d.ts", nextSegmentIndex),
 			Duration:  HLSSegmentDuration,
 			StartTime: now,
 			Ready:     false, // Will be set to true when complete segment is created
@@ -807,11 +857,22 @@ func updateHLSSegments(hlsData *HLSData) {
 		hlsData.segments = append(hlsData.segments, newSegment)
 		hlsData.lastSegmentTime = now
 
-		// Maintain sliding window
+		// Maintain sliding window - but be careful with media sequence
 		if len(hlsData.segments) > HLSWindowSize {
 			// Remove oldest segment and increment media sequence
+			removedSegment := hlsData.segments[0]
 			hlsData.segments = hlsData.segments[1:]
 			hlsData.mediaSequence++
+			
+			// Also clean up the segment file for the removed segment
+			if hlsData.segmentFiles != nil {
+				delete(hlsData.segmentFiles, removedSegment.Index)
+			}
+			
+			if settings != nil && settings.HLSDebugLogging {
+				common.LogInfof("HLS: Removed old segment %d, new media sequence: %d\n", 
+					removedSegment.Index, hlsData.mediaSequence)
+			}
 		}
 
 		if settings != nil && settings.HLSDebugLogging {
