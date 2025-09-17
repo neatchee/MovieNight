@@ -17,6 +17,7 @@ import (
 
 	"github.com/zorchenhimer/MovieNight/common"
 
+	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/gorilla/websocket"
 	"github.com/nareix/joy4/av/avutil"
 	"github.com/nareix/joy4/av/pubsub"
@@ -36,8 +37,8 @@ var (
 	channels = map[string]*Channel{}
 	
 	// HLS-related variables
-	hlsSegments map[string]*HLSStreamData
-	hlsMutex    *sync.RWMutex
+	hlsSegments = make(map[string]*HLSStreamData)
+	hlsMutex    = &sync.RWMutex{}
 )
 
 type Channel struct {
@@ -45,20 +46,17 @@ type Channel struct {
 }
 
 type HLSStreamData struct {
+	playlist       *m3u8.MediaPlaylist
+	segmentCount   int
 	currentSeq     int
 	lastUpdate     time.Time
 	segmentWindow  []int  // Keep track of current segments in window
+	mutex          sync.RWMutex
 }
 
 type writeFlusher struct {
 	httpflusher http.Flusher
 	io.Writer
-}
-
-func init() {
-	// Initialize HLS-related data structures
-	hlsSegments = make(map[string]*HLSStreamData)
-	hlsMutex = &sync.RWMutex{}
 }
 
 func (w writeFlusher) Flush() error {
@@ -511,58 +509,87 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	hlsMutex.Lock()
-	defer hlsMutex.Unlock()
-	
+	hlsMutex.RLock()
 	hlsStream, exists := hlsSegments[streamPath]
+	hlsMutex.RUnlock()
+	
 	if !exists {
 		// Initialize HLS stream data
+		hlsMutex.Lock()
+		playlist, err := m3u8.NewMediaPlaylist(5, 10) // 5 segments window, 10 max capacity
+		if err != nil {
+			hlsMutex.Unlock()
+			common.LogErrorf("Could not create HLS playlist: %v\n", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		playlist.SetVersion(3)
+		playlist.SetTargetDuration(10)
+		
 		hlsStream = &HLSStreamData{
+			playlist:      playlist,
+			segmentCount:  0,
 			currentSeq:    0,
 			lastUpdate:    time.Now(),
-			segmentWindow: make([]int, 0, 5),
+			segmentWindow: make([]int, 0, 5), // Capacity for 5 segments
 		}
 		hlsSegments[streamPath] = hlsStream
+		hlsMutex.Unlock()
 	}
 	
-	now := time.Now()
-	segmentDuration := 6.0
+	hlsStream.mutex.Lock()
+	defer hlsStream.mutex.Unlock()
 	
-	// Update sequence number every 6 seconds to simulate live segments
-	if len(hlsStream.segmentWindow) == 0 || now.Sub(hlsStream.lastUpdate) >= time.Duration(segmentDuration)*time.Second {
-		// Calculate next segment number
-		nextSegment := hlsStream.currentSeq + len(hlsStream.segmentWindow)
-		hlsStream.segmentWindow = append(hlsStream.segmentWindow, nextSegment)
+	// Update playlist with new segments if needed
+	now := time.Now()
+	segmentDuration := 6.0 // 6 seconds per segment
+	
+	// Check if we need to add a new segment (every 6 seconds)
+	if now.Sub(hlsStream.lastUpdate) >= time.Duration(segmentDuration)*time.Second {
+		// Add new segment to window
+		newSegmentNum := hlsStream.currentSeq + len(hlsStream.segmentWindow)
 		
-		// Keep sliding window of 5 segments
+		// Add to our segment window
+		hlsStream.segmentWindow = append(hlsStream.segmentWindow, newSegmentNum)
+		
+		// Keep only last 5 segments (sliding window)
 		if len(hlsStream.segmentWindow) > 5 {
 			hlsStream.segmentWindow = hlsStream.segmentWindow[1:]
 			hlsStream.currentSeq++
 		}
 		
 		hlsStream.lastUpdate = now
-		common.LogInfof("HLS: Added segment %d, current seq: %d, window: %v\n", 
-			nextSegment, hlsStream.currentSeq, hlsStream.segmentWindow)
+		// Updated segment window
 	}
 	
-	// Generate manifest
-	manifest := "#EXTM3U\n"
-	manifest += "#EXT-X-VERSION:3\n"
-	manifest += fmt.Sprintf("#EXT-X-MEDIA-SEQUENCE:%d\n", hlsStream.currentSeq)
-	manifest += "#EXT-X-TARGETDURATION:10\n"
+	// Create fresh playlist with current segments
+	playlist, err := m3u8.NewMediaPlaylist(5, 10)
+	if err != nil {
+		common.LogErrorf("Could not create HLS playlist: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	playlist.SetVersion(3)
+	playlist.SetTargetDuration(10)
+	playlist.SeqNo = uint64(hlsStream.currentSeq)
 	
-	// Add all segments in window
+	// Add all segments in current window
 	for _, segNum := range hlsStream.segmentWindow {
-		manifest += fmt.Sprintf("#EXTINF:%.3f,\n", segmentDuration)
-		manifest += fmt.Sprintf("/live_segment_%d.ts\n", segNum)
+		segmentURL := fmt.Sprintf("/live_segment_%d.ts", segNum)
+		err = playlist.Append(segmentURL, segmentDuration, "")
+		if err != nil {
+			common.LogErrorf("Could not append segment %d to playlist: %v\n", segNum, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 	
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	
-	common.LogInfof("Generated HLS playlist for %s:\n%s\n", streamPath, manifest)
-	w.Write([]byte(manifest))
+	playlistContent := playlist.String()
+	w.Write([]byte(playlistContent))
 }
 
 // HLS segment handler
@@ -594,23 +621,24 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	// Check if the requested segment is in our current window
 	hlsMutex.RLock()
 	hlsStream, exists := hlsSegments[streamPath]
+	hlsMutex.RUnlock()
 	
-	isValidSegment := true // Default to valid if no validation needed
 	if exists && hlsStream != nil {
-		isValidSegment = false
+		hlsStream.mutex.RLock()
+		isValidSegment := false
 		for _, validSegNum := range hlsStream.segmentWindow {
 			if validSegNum == segmentNum {
 				isValidSegment = true
 				break
 			}
 		}
-	}
-	hlsMutex.RUnlock()
-	
-	if exists && !isValidSegment {
-		// Requested segment not in current window
-		w.WriteHeader(http.StatusNotFound)
-		return
+		hlsStream.mutex.RUnlock()
+		
+		if !isValidSegment {
+			// Requested segment not in current window
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 	}
 	
 	// Re-check channel and queue status to prevent race conditions
