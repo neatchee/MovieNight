@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -10,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zorchenhimer/MovieNight/common"
 
 	"github.com/gorilla/websocket"
+	"github.com/grafov/m3u8"
 	"github.com/nareix/joy4/av/avutil"
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format/flv"
@@ -29,10 +32,21 @@ var (
 
 	// Map of active streams
 	channels = map[string]*Channel{}
+
+	// HLS related variables
+	hlsChannels = map[string]*HLSChannel{}
+	hlsMutex    = &sync.RWMutex{}
 )
 
 type Channel struct {
 	que *pubsub.Queue
+}
+
+type HLSChannel struct {
+	playlist *m3u8.MediaPlaylist
+	segments map[string][]byte
+	mutex    sync.RWMutex
+	lastSegmentIndex int
 }
 
 type writeFlusher struct {
@@ -457,6 +471,187 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		// Maybe HTTP_204 is better than HTTP_404
 		w.WriteHeader(http.StatusNoContent)
 		stats.resetViewers()
+	}
+}
+
+// HLS handler for serving playlists and segments
+func handleHLS(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/hls/")
+	parts := strings.Split(path, "/")
+	
+	if len(parts) < 1 {
+		http.Error(w, "Invalid HLS request", http.StatusBadRequest)
+		return
+	}
+	
+	channelName := parts[0]
+	
+	if len(parts) == 1 || (len(parts) == 2 && parts[1] == "") {
+		// Request for playlist
+		handleHLSPlaylist(w, r, channelName)
+	} else if len(parts) == 2 && strings.HasSuffix(parts[1], ".ts") {
+		// Request for segment
+		segmentName := parts[1]
+		handleHLSSegment(w, r, channelName, segmentName)
+	} else {
+		http.Error(w, "Invalid HLS request", http.StatusBadRequest)
+	}
+}
+
+// Handle HLS playlist requests (.m3u8)
+func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, channelName string) {
+	hlsMutex.RLock()
+	hlsChannel := hlsChannels[channelName]
+	hlsMutex.RUnlock()
+	
+	if hlsChannel == nil {
+		// Check if we have a regular channel to create HLS from
+		l.RLock()
+		ch := channels[channelName]
+		l.RUnlock()
+		
+		if ch == nil {
+			http.Error(w, "Channel not found", http.StatusNotFound)
+			return
+		}
+		
+		// Create HLS channel for this stream
+		hlsChannel = createHLSChannel(channelName)
+		if hlsChannel == nil {
+			http.Error(w, "Could not create HLS channel", http.StatusInternalServerError)
+			return
+		}
+	}
+	
+	hlsChannel.mutex.RLock()
+	playlist := hlsChannel.playlist
+	hlsChannel.mutex.RUnlock()
+	
+	if playlist == nil {
+		http.Error(w, "Playlist not ready", http.StatusNotFound)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-cache")
+	
+	session, _ := sstore.Get(r, "moviesession")
+	stats.addViewer(session.ID)
+	defer stats.removeViewer(session.ID)
+	
+	fmt.Fprint(w, playlist.String())
+}
+
+// Handle HLS segment requests (.ts)
+func handleHLSSegment(w http.ResponseWriter, r *http.Request, channelName, segmentName string) {
+	hlsMutex.RLock()
+	hlsChannel := hlsChannels[channelName]
+	hlsMutex.RUnlock()
+	
+	if hlsChannel == nil {
+		http.Error(w, "Channel not found", http.StatusNotFound)
+		return
+	}
+	
+	hlsChannel.mutex.RLock()
+	segmentData, exists := hlsChannel.segments[segmentName]
+	hlsChannel.mutex.RUnlock()
+	
+	if !exists {
+		http.Error(w, "Segment not found", http.StatusNotFound)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "video/mp2t")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(200)
+	
+	w.Write(segmentData)
+}
+
+// Create a new HLS channel for the given stream
+func createHLSChannel(channelName string) *HLSChannel {
+	playlist, err := m3u8.NewMediaPlaylist(3, 10) // window size 3, capacity 10
+	if err != nil {
+		common.LogErrorf("Could not create HLS playlist: %v\n", err)
+		return nil
+	}
+	
+	hlsChannel := &HLSChannel{
+		playlist: playlist,
+		segments: make(map[string][]byte),
+		lastSegmentIndex: 0,
+	}
+	
+	hlsMutex.Lock()
+	hlsChannels[channelName] = hlsChannel
+	hlsMutex.Unlock()
+	
+	// Start the HLS conversion goroutine
+	go convertStreamToHLS(channelName, hlsChannel)
+	
+	return hlsChannel
+}
+
+// Convert the existing stream to HLS segments
+func convertStreamToHLS(channelName string, hlsChannel *HLSChannel) {
+	l.RLock()
+	ch := channels[channelName]
+	l.RUnlock()
+	
+	if ch == nil {
+		return
+	}
+	
+	// cursor := ch.que.Latest() // TODO: Use this for actual stream conversion
+	segmentDuration := 2.0 // 2 seconds per segment
+	
+	for {
+		// This is a simplified conversion - in a real implementation,
+		// you would need proper stream parsing and segmentation
+		segmentName := fmt.Sprintf("segment%d.ts", hlsChannel.lastSegmentIndex)
+		
+		// Create a mock segment (in reality, you'd parse the stream and create proper TS segments)
+		segmentData := make([]byte, 1024*10) // 10KB mock segment
+		
+		hlsChannel.mutex.Lock()
+		hlsChannel.segments[segmentName] = segmentData
+		hlsChannel.playlist.Append(segmentName, segmentDuration, "")
+		hlsChannel.lastSegmentIndex++
+		
+		// Remove old segments to prevent memory buildup
+		if len(hlsChannel.segments) > 10 {
+			// Remove segments older than the playlist window
+			for segName := range hlsChannel.segments {
+				found := false
+				for _, segment := range hlsChannel.playlist.Segments {
+					if segment != nil && segment.URI == segName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					delete(hlsChannel.segments, segName)
+				}
+			}
+		}
+		hlsChannel.mutex.Unlock()
+		
+		time.Sleep(time.Duration(segmentDuration) * time.Second)
+		
+		// Check if the channel still exists
+		l.RLock()
+		_, exists := channels[channelName]
+		l.RUnlock()
+		
+		if !exists {
+			// Clean up HLS channel
+			hlsMutex.Lock()
+			delete(hlsChannels, channelName)
+			hlsMutex.Unlock()
+			break
+		}
 	}
 }
 
