@@ -1,8 +1,11 @@
 module github.com/zorchenhimer/MovieNight
 
-go 1.18
+go 1.21
+
+toolchain go1.24.7
 
 require (
+	github.com/Eyevinn/hls-m3u8 v0.6.0
 	github.com/alexflint/go-arg v1.4.3
 	github.com/gorilla/sessions v1.2.1
 	github.com/gorilla/websocket v1.5.0
