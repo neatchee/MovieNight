@@ -231,7 +231,7 @@ function tryHLSPlayer(videoElement) {
                         if (segmentIndex % 5 === 0) {
                             const bufferLength = videoElement.buffered.length > 0 ? 
                                 Math.round(videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime) : 0;
-                            console.log(`HLS segment transition: ${segmentIndex}, buffer: ${bufferLength}s`);
+                            // console.log(`HLS segment transition: ${segmentIndex}, buffer: ${bufferLength}s`);
                         }
                         
                         // Check for buffer health during transitions
@@ -264,12 +264,12 @@ function tryHLSPlayer(videoElement) {
             });
             
             // Enhanced buffer management for segment transitions
-            hls.on(Hls.Events.BUFFER_FLUSHING, (event, data) => {
-                console.log('HLS buffer flushing for clean transition');
-            });
+            // hls.on(Hls.Events.BUFFER_FLUSHING, (event, data) => {
+                // console.log('HLS buffer flushing for clean transition');
+            // });
             
             hls.on(Hls.Events.BUFFER_FLUSHED, (event, data) => {
-                console.log('HLS buffer flushed successfully');
+                // console.log('HLS buffer flushed successfully');
                 lastBufferUpdate = Date.now();
             });
             
