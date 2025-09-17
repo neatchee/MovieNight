@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -640,7 +641,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
-	// Serve proper TS format for HLS compatibility
+	// Serve a time-limited TS segment for HLS compatibility
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "max-age=10")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -649,19 +650,35 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	flusher := w.(http.Flusher)
 	flusher.Flush()
 	
+	// Create a context with timeout for the segment
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	
 	// Use TS muxer for proper HLS segment format
 	tsMuxer := ts.NewMuxer(writeFlusher{httpflusher: flusher, Writer: w})
 	cursor := ch.que.Latest()
 	
 	session, _ := sstore.Get(r, "moviesession")
 	stats.addViewer(session.ID)
+	defer stats.removeViewer(session.ID)
 	
-	// Serving segment for stream
-	err = avutil.CopyFile(tsMuxer, cursor)
-	if err != nil {
-		common.LogErrorf("Could not copy video to HLS TS segment connection: %v\n", err)
+	// Create a limited segment by copying with timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- avutil.CopyFile(tsMuxer, cursor)
+	}()
+	
+	// Wait for either completion or timeout
+	select {
+	case err := <-done:
+		if err != nil {
+			common.LogErrorf("Could not copy video to HLS TS segment connection: %v\n", err)
+		}
+	case <-ctx.Done():
+		// Timeout reached - this creates a time-bounded segment
+		// This is acceptable for HLS as each segment should be time-limited
+		break
 	}
-	stats.removeViewer(session.ID)
 }
 
 func wrapAuth(next http.HandlerFunc) http.HandlerFunc {
