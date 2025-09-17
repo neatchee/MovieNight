@@ -76,116 +76,333 @@ function tryHLSPlayer(videoElement) {
             videoElement.src = '/live.m3u8';
             videoElement.load();
             videoElement.play().catch(e => console.warn('HLS native play failed:', e));
-            currentPlayer = { type: 'native-hls' };
+            
+            currentPlayer = { 
+                type: 'native-hls',
+                getStats: () => ({ type: 'native-hls', segments: 0 })
+            };
+            
             return true;
         }
         
         // Check for HLS.js support
         if (window.Hls && Hls.isSupported()) {
             const hls = new Hls({
+                debug: false,
                 enableWorker: false,
-                lowLatencyMode: false,  // Disable low latency for better buffering
-                backBufferLength: 60,   // Reduce back buffer to save memory
-                maxBufferLength: 40,    // Increase max buffer for smoother playback (adjusted for 4s segments)
-                maxMaxBufferLength: 80, // Increase maximum buffer size (adjusted for 4s segments)
-                maxBufferSize: 40 * 1000 * 1000, // 40MB buffer size
-                maxBufferHole: 0.1,     // Allow small buffer holes
-                liveSyncDurationCount: 4, // Number of segments for live sync (adjusted for 4s segments)
-                liveMaxLatencyDurationCount: 8, // Maximum latency segments (adjusted for 4s segments)
-                manifestLoadingTimeOut: 10000, // 10 second manifest timeout
-                manifestLoadingMaxRetry: 6, // Retry manifest loading
-                manifestLoadingRetryDelay: 500, // Delay between retries
-                fragLoadingTimeOut: 15000, // 15 second fragment timeout (reduced for 4s segments)
-                fragLoadingMaxRetry: 6, // Retry fragment loading
-                fragLoadingRetryDelay: 1000, // Delay between retries
-                startLevel: -1, // Auto select start level
-                abrEwmaFastLive: 3, // Fast switching for live streams
-                abrEwmaSlowLive: 9, // Slow switching for live streams
-                debug: false
+                
+                // Optimized live streaming configuration for smooth transitions
+                // Increased buffer sizes for better stability without custom pre-fetching
+                maxBufferLength: 30,        // 30 seconds of buffer for smooth playback
+                maxMaxBufferLength: 60,     // Maximum buffer size
+                maxBufferSize: 60 * 1000 * 1000, // 60MB buffer size limit
+                maxBufferHole: 0.1,         // Smaller buffer holes for smoother playback
+                
+                // Live streaming specific settings optimized for smooth transitions
+                liveSyncDurationCount: 3,   // Stay close to live edge (3 segments = 18s)
+                liveMaxLatencyDurationCount: 8, // Reasonable max latency (8 segments = 48s)
+                liveDurationInfinity: true, // Allow infinite duration for live streams
+                
+                // Fragment loading optimized for smooth delivery
+                fragLoadingTimeOut: 20000,  // 20s timeout for 6s segments  
+                fragLoadingMaxRetry: 4,     // More retries for reliability
+                fragLoadingRetryDelay: 500, // Fast retry delay
+                
+                // Manifest loading
+                manifestLoadingTimeOut: 10000, // 10s manifest timeout
+                manifestLoadingMaxRetry: 4,     
+                manifestLoadingRetryDelay: 500, 
+                
+                // Error recovery optimized for live streams
+                fragLoadingMaxRetryTimeout: 64000, // Longer retry timeout for reliability
+                levelLoadingTimeOut: 10000,  
+                levelLoadingMaxRetry: 4,     
+                levelLoadingRetryDelay: 500, 
+                
+                // Start configuration
+                startLevel: -1,              // Auto-select start level
+                autoStartLoad: true,         // Auto-start loading
+                
+                // Adaptive bitrate - balanced settings
+                abrEwmaFastLive: 3.0,        // Standard EWMA for live ABR
+                abrEwmaSlowLive: 9.0,        // Standard slow EWMA
+                abrEwmaDefaultEstimate: 1000000, // 1Mbps default estimate
+                abrBandWidthFactor: 0.95,    // Conservative bandwidth factor
+                abrBandWidthUpFactor: 0.7,   // Conservative upward switching
+                
+                // Buffer management for smooth playback
+                maxStarvationDelay: 4,       // Standard starvation delay
+                maxLoadingDelay: 4,          // Standard loading delay
+                nudgeOffset: 0.1,            // Standard nudge offset
+                nudgeMaxRetry: 3,            // Standard nudge retries
+                
+                // Cap level to player size for efficiency
+                capLevelToPlayerSize: true
             });
             
             hls.loadSource('/live.m3u8');
             hls.attachMedia(videoElement);
             
-            // Wait for first segment to be loaded before attempting to play
+            // Enhanced state tracking for smooth HLS playback
             let firstSegmentLoaded = false;
+            let segmentCount = 0;
+            let lastBufferUpdate = Date.now();
+            let connectionState = 'connecting';
+            let retryCount = 0;
+            let stalledRecoveryTimeout = null;
             
             hls.on(Hls.Events.MANIFEST_LOADED, () => {
                 console.log('HLS manifest loaded successfully');
-                // Don't auto-play yet, wait for first fragment
+                connectionState = 'manifest-loaded';
+                retryCount = 0; // Reset retry count on successful manifest load
             });
             
-            hls.on(Hls.Events.FRAG_LOADED, () => {
-                if (!firstSegmentLoaded) {
-                    firstSegmentLoaded = true;
-                    console.log('HLS first segment loaded, starting playback');
-                    // Wait a bit more to ensure buffer has some data
-                    setTimeout(() => {
-                        videoElement.play().catch(e => console.warn('HLS play failed:', e));
-                    }, 1000);
+            // Enhanced fragment loading monitoring
+            hls.on(Hls.Events.FRAG_LOADING, (event, data) => {
+                if (connectionState === 'manifest-loaded') {
+                    connectionState = 'loading-segments';
+                }
+                lastBufferUpdate = Date.now();
+                
+                // Clear any existing stall recovery timeout
+                if (stalledRecoveryTimeout) {
+                    clearTimeout(stalledRecoveryTimeout);
+                    stalledRecoveryTimeout = null;
                 }
             });
             
+            hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+                segmentCount++;
+                lastBufferUpdate = Date.now();
+                
+                if (!firstSegmentLoaded) {
+                    firstSegmentLoaded = true;
+                    connectionState = 'playing';
+                    console.log('HLS first segment loaded, starting playback');
+                    // Fast startup for live streaming
+                    setTimeout(() => {
+                        videoElement.play().catch(e => console.warn('HLS play failed:', e));
+                    }, 500);
+                } else {
+                    // Log segment transitions for monitoring
+                    if (segmentCount % 10 === 0) {
+                        console.log(`HLS: ${segmentCount} segments loaded successfully`);
+                    }
+                }
+            });
+            
+            // Connection state monitoring
             hls.on(Hls.Events.MEDIA_ATTACHED, () => {
                 console.log('HLS media attached');
+                connectionState = 'attached';
             });
             
             hls.on(Hls.Events.MEDIA_DETACHED, () => {
                 console.log('HLS media detached');
+                connectionState = 'detached';
+                // Clean up when media is detached
+                if (stalledRecoveryTimeout) {
+                    clearTimeout(stalledRecoveryTimeout);
+                    stalledRecoveryTimeout = null;
+                }
             });
             
-            // Add buffer monitoring for better performance
-            hls.on(Hls.Events.BUFFER_CREATED, () => {
-                console.log('HLS buffer created');
+            // Buffer monitoring for smooth playback
+            hls.on(Hls.Events.BUFFER_CREATED, (event, data) => {
+                console.log('HLS buffer created:', data.tracks);
+                connectionState = 'buffer-created';
             });
             
-            hls.on(Hls.Events.BUFFER_APPENDED, () => {
-                // Buffer is growing, good for performance
+            hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
+                lastBufferUpdate = Date.now();
+                
+                // Monitor buffer health
+                if (data.frag && data.frag.sn % 5 === 0) {
+                    const videoBufferAhead = videoElement.buffered.length > 0 ? 
+                        Math.round(videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime) : 0;
+                    console.log(`HLS buffer health: ${videoBufferAhead}s video buffer`);
+                }
             });
             
             hls.on(Hls.Events.BUFFER_EOS, () => {
                 console.log('HLS end of stream reached');
+                connectionState = 'ended';
             });
             
-            // Comprehensive error handling following HLS.js documentation
+            // Enhanced buffer stall detection and recovery
+            hls.on(Hls.Events.BUFFER_STALLED, () => {
+                console.warn('HLS buffer stalled, implementing recovery strategy');
+                
+                // Implement recovery strategy
+                if (!stalledRecoveryTimeout) {
+                    stalledRecoveryTimeout = setTimeout(() => {
+                        if (connectionState === 'playing' && currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
+                            console.log('Attempting buffer stall recovery...');
+                            try {
+                                hls.trigger(Hls.Events.BUFFER_RESET);
+                                hls.startLoad();
+                            } catch (e) {
+                                console.warn('Buffer stall recovery failed:', e);
+                            }
+                        }
+                        stalledRecoveryTimeout = null;
+                    }, 2000); // Standard recovery delay
+                }
+            });
+            
+            // Level switching for smooth transitions
+            hls.on(Hls.Events.LEVEL_SWITCHING, (event, data) => {
+                console.log(`HLS quality switching to level ${data.level}`);
+            });
+            
+            hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+                console.log(`HLS quality switched to level ${data.level}`);
+            });
+            
+            // Comprehensive error handling with enhanced recovery
             hls.on(Hls.Events.ERROR, (event, data) => {
-                // Handle specific non-fatal errors more gracefully
+                const currentTime = Date.now();
+                const timeSinceLastBuffer = currentTime - lastBufferUpdate;
+                
+                // Enhanced non-fatal error handling
                 if (!data.fatal) {
-                    // Common initial buffering issues that can be ignored
-                    if (data.details === 'bufferStalledError' && !firstSegmentLoaded) {
-                        console.log('Initial buffer stall, waiting for first segment...');
-                        return; // Don't log this as an error
+                    // Handle specific non-fatal errors according to HLS.js documentation
+                    switch (data.details) {
+                        case 'bufferStalledError':
+                            if (!firstSegmentLoaded) {
+                                console.log('Initial buffer stall, waiting for first segment...');
+                                return;
+                            }
+                            console.log('Buffer stalled - normal during live streaming');
+                            return;
+                            
+                        case 'bufferNudgedOnStall':
+                            console.log('Buffer nudged on stall - recovery in progress');
+                            return;
+                            
+                        case 'bufferSeekOverHole':
+                            console.log('Buffer seek over hole - attempting recovery');
+                            return;
+                            
+                        case 'bufferAppendingError':
+                            console.log('Buffer appending error - will retry automatically');
+                            return;
+                            
+                        case 'bufferAppendError':
+                            console.log('Buffer append error - likely caused by track changes, will recover');
+                            // This is often non-fatal and HLS.js will recover automatically
+                            return;
+                            
+                        case 'bufferFullError':
+                            console.log('Buffer full - will manage automatically');
+                            return;
+                            
+                        case 'fragLoadError':
+                            console.log('Fragment load error - will retry');
+                            return;
+                            
+                        case 'fragParsingError':
+                            console.log('Fragment parsing error - may indicate server-side TS issues');
+                            return;
+                            
+                        default:
+                            // Log other non-fatal errors with context
+                            console.log(`Non-fatal HLS error: ${data.details} (connection: ${connectionState}, buffer age: ${timeSinceLastBuffer}ms)`);
+                            return;
                     }
-                    if (data.details === 'bufferNudgedOnStall') {
-                        console.log('Buffer nudged on stall - normal behavior');
-                        return; // Don't log this as an error
-                    }
-                    // Log other non-fatal errors for debugging
-                    console.log('Non-fatal HLS error:', data.details);
-                    return;
                 }
                 
-                // Handle fatal errors
+                // Enhanced fatal error handling with connection state awareness
                 console.warn('Fatal HLS error:', data);
+                retryCount++;
                 
                 switch (data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR:
-                        console.log('Fatal network error, attempting to recover...');
-                        hls.startLoad();
+                        console.log(`Fatal network error (attempt ${retryCount}), implementing recovery...`);
+                        if (retryCount <= 3) {
+                            // Progressive retry with exponential backoff
+                            setTimeout(() => {
+                                try {
+                                    // Check if HLS instance is still valid before recovery
+                                    if (currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
+                                        hls.startLoad();
+                                        connectionState = 'recovering';
+                                    }
+                                } catch (e) {
+                                    console.error('Network recovery failed:', e);
+                                }
+                            }, Math.min(1000 * Math.pow(2, retryCount - 1), 5000));
+                        } else {
+                            console.log('Maximum network recovery attempts reached, falling back');
+                            destroyCurrentPlayer();
+                            tryMpegTSPlayer(videoElement);
+                        }
                         break;
+                        
                     case Hls.ErrorTypes.MEDIA_ERROR:
-                        console.log('Fatal media error, attempting to recover...');
-                        hls.recoverMediaError();
+                        console.log(`Fatal media error (attempt ${retryCount}), attempting recovery...`);
+                        if (retryCount <= 2) {
+                            try {
+                                // Check if HLS instance is still valid before recovery
+                                if (currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
+                                    hls.recoverMediaError();
+                                    connectionState = 'recovering';
+                                } else {
+                                    console.log('HLS instance no longer valid, falling back');
+                                    destroyCurrentPlayer();
+                                    tryMpegTSPlayer(videoElement);
+                                }
+                            } catch (e) {
+                                console.error('Media recovery failed:', e);
+                                destroyCurrentPlayer();
+                                tryMpegTSPlayer(videoElement);
+                            }
+                        } else {
+                            console.log('Maximum media recovery attempts reached, falling back');
+                            destroyCurrentPlayer();
+                            tryMpegTSPlayer(videoElement);
+                        }
                         break;
+                        
                     default:
-                        console.log('Fatal error, cannot recover - falling back to MPEG-TS');
+                        console.log('Unrecoverable fatal error, falling back to MPEG-TS');
                         destroyCurrentPlayer();
                         tryMpegTSPlayer(videoElement);
                         break;
                 }
             });
             
-            currentPlayer = { type: 'hls.js', instance: hls };
+            // Monitor connection health periodically
+            const connectionMonitor = setInterval(() => {
+                if (!currentPlayer || currentPlayer.type !== 'hls.js' || !currentPlayer.instance) {
+                    clearInterval(connectionMonitor);
+                    return;
+                }
+                
+                const timeSinceLastBuffer = Date.now() - lastBufferUpdate;
+                
+                // Check for connection issues
+                if (timeSinceLastBuffer > 15000 && connectionState === 'playing') {
+                    console.warn(`Connection may be stalled (${timeSinceLastBuffer}ms since last buffer update)`);
+                    connectionState = 'stalled';
+                } else if (timeSinceLastBuffer < 15000 && connectionState === 'stalled') {
+                    console.log('Connection recovered');
+                    connectionState = 'playing';
+                }
+            }, 5000);
+            
+            currentPlayer = { 
+                type: 'hls.js', 
+                instance: hls,
+                connectionMonitor: connectionMonitor,
+                getConnectionState: () => connectionState,
+                getStats: () => ({
+                    segmentCount: segmentCount,
+                    retryCount: retryCount,
+                    timeSinceLastBuffer: Date.now() - lastBufferUpdate,
+                    connectionState: connectionState
+                })
+            };
             return true;
         }
         
@@ -206,13 +423,22 @@ function tryMpegTSPlayer(videoElement) {
             return false;
         }
 
+        // Detect Chrome browser for stricter MediaSource handling
+        const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edg');
+        
         const flvPlayer = mpegts.createPlayer({
             type: 'flv',
             url: '/live'
         }, {
             isLive: true,
-            liveBufferLatencyChasing: true,
-            autoCleanupSourceBuffer: true,
+            liveBufferLatencyChasing: !isChrome, // Disable for Chrome to prevent seek conflicts
+            autoCleanupSourceBuffer: false,
+            enableWorker: false,
+            reuseRedirectedURL: true,
+            deferLoadAfterSourceOpen: false,
+            fixAudioTimestampGap: false,
+            enableStashBuffer: !isChrome, // Disable stash buffer for Chrome
+            stashInitialSize: isChrome ? 0 : undefined, // Minimize buffering for Chrome
         });
         
         flvPlayer.attachMediaElement(videoElement);
@@ -235,10 +461,68 @@ function tryMpegTSPlayer(videoElement) {
 function destroyCurrentPlayer() {
     if (currentPlayer && currentPlayer.instance) {
         try {
+            // Clean up connection monitor if it exists
+            if (currentPlayer.connectionMonitor) {
+                clearInterval(currentPlayer.connectionMonitor);
+                currentPlayer.connectionMonitor = null;
+            }
+            
             if (currentPlayer.type === 'hls.js') {
+                // Proper HLS.js cleanup sequence to prevent bufferAppendError
+                // First detach media to stop buffer operations
+                currentPlayer.instance.detachMedia();
+                // Then destroy the instance
                 currentPlayer.instance.destroy();
+                console.log('HLS player destroyed and cleaned up');
             } else if (currentPlayer.type === 'mpegts') {
-                currentPlayer.instance.destroy();
+                // Detect Chrome for more aggressive cleanup handling
+                const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edg');
+                
+                // Proper MPEG-TS cleanup sequence to prevent SourceBuffer abort issues
+                try {
+                    // First pause to stop any ongoing operations  
+                    currentPlayer.instance.pause();
+                    
+                    // For Chrome, add extra delay and more cautious cleanup
+                    if (isChrome) {
+                        // Wait longer for Chrome to complete any pending operations
+                        setTimeout(() => {
+                            try {
+                                currentPlayer.instance.unload();
+                                // Longer delay for Chrome before destroy
+                                setTimeout(() => {
+                                    try {
+                                        currentPlayer.instance.destroy();
+                                        console.log('MPEG-TS player destroyed and cleaned up (Chrome)');
+                                    } catch (e) {
+                                        console.warn('Error during delayed Chrome MPEG-TS destroy:', e);
+                                    }
+                                }, 200);
+                            } catch (e) {
+                                console.warn('Error during Chrome MPEG-TS unload:', e);
+                            }
+                        }, 150);
+                    } else {
+                        // Standard cleanup for other browsers
+                        currentPlayer.instance.unload();
+                        setTimeout(() => {
+                            try {
+                                currentPlayer.instance.destroy();
+                                console.log('MPEG-TS player destroyed and cleaned up');
+                            } catch (e) {
+                                console.warn('Error during delayed MPEG-TS destroy:', e);
+                            }
+                        }, 100);
+                    }
+                } catch (e) {
+                    console.warn('Error during MPEG-TS cleanup:', e);
+                    // Fallback - try to destroy immediately
+                    try {
+                        currentPlayer.instance.destroy();
+                    } catch (e2) {
+                        console.warn('Error during fallback MPEG-TS destroy:', e2);
+                    }
+                }
             }
         } catch (error) {
             console.error('Error destroying player:', error);
