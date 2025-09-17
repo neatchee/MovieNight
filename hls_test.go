@@ -61,13 +61,14 @@ func TestUpdateHLSSegments(t *testing.T) {
 	hlsData := &HLSData{
 		mediaSequence:   0,
 		segments:        make([]HLSSegment, 0),
-		lastSegmentTime: time.Now().Add(-7 * time.Second), // Make it old enough for new segment
+		lastSegmentTime: time.Now().Add(-7 * time.Second), // Make it old enough for new segment (7s > 6s duration)
 	}
 
 	// Should add a new segment
 	updateHLSSegments(hlsData)
 	assert.Equal(t, 1, len(hlsData.segments))
 	assert.Equal(t, uint64(0), hlsData.segments[0].Index)
+	assert.Equal(t, HLSSegmentDuration, hlsData.segments[0].Duration) // Verify 6.0 second duration
 
 	// Advance time and add more segments
 	hlsData.lastSegmentTime = time.Now().Add(-7 * time.Second)
@@ -83,6 +84,13 @@ func TestUpdateHLSSegments(t *testing.T) {
 	// Should maintain window size and increment sequence
 	assert.Equal(t, HLSWindowSize, len(hlsData.segments))
 	assert.True(t, hlsData.mediaSequence > 0, "Media sequence should increment")
+}
+
+func TestHLSSegmentDurationCompliance(t *testing.T) {
+	// Test that segment duration is exactly 6.0 seconds as required
+	assert.Equal(t, 6.0, HLSSegmentDuration, "Segment duration must be 6.0 seconds")
+	assert.Equal(t, 12.0, HLSTargetDuration, "Target duration should be 2x segment duration")
+	assert.Equal(t, 6, HLSWindowSize, "Window size should accommodate proper buffering")
 }
 
 func TestWriteFlusherNilProtection(t *testing.T) {
