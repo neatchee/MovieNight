@@ -506,7 +506,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	ch := channels[streamPath]
 	l.RUnlock()
 	
-	if ch == nil {
+	if ch == nil || ch.que == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -596,7 +596,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	hlsStream, exists := hlsSegments[streamPath]
 	
 	isValidSegment := true // Default to valid if no validation needed
-	if exists {
+	if exists && hlsStream != nil {
 		isValidSegment = false
 		for _, validSegNum := range hlsStream.segmentWindow {
 			if validSegNum == segmentNum {
@@ -609,6 +609,16 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	
 	if exists && !isValidSegment {
 		// Requested segment not in current window
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	// Re-check channel and queue status to prevent race conditions
+	l.RLock()
+	ch = channels[streamPath]
+	l.RUnlock()
+	
+	if ch == nil || ch.que == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -629,6 +639,12 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	// Use TS muxer for proper HLS segment format
 	tsMuxer := ts.NewMuxer(writeFlusher{httpflusher: flusher, Writer: w})
 	cursor := ch.que.Latest()
+	
+	if cursor == nil {
+		// Cannot send 404 here as headers are already written
+		common.LogErrorf("Cursor is nil for HLS segment %d\n", segmentNum)
+		return
+	}
 	
 	session, _ := sstore.Get(r, "moviesession")
 	stats.addViewer(session.ID)
