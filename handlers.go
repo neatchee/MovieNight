@@ -61,7 +61,7 @@ type HLSSegment struct {
 const (
 	HLSSegmentDuration = 6.0  // seconds per segment (as required by specification)
 	HLSWindowSize      = 6    // number of segments to keep in playlist (increased for better buffering)
-	HLSTargetDuration  = 12   // target duration for HLS spec (adjusted for 6s segments)
+	HLSTargetDuration  = 12.0 // target duration for HLS spec (adjusted for 6s segments)
 )
 
 type writeFlusher struct {
