@@ -49,8 +49,7 @@ type HLSData struct {
 	mediaSequence   uint64
 	segments        []HLSSegment
 	lastSegmentTime time.Time
-	segmentFiles    map[uint64]*SegmentFile
-	segmenter       *TSSegmenter
+	segmentCache    map[uint64]*SegmentCache
 }
 
 type HLSSegment struct {
@@ -58,24 +57,12 @@ type HLSSegment struct {
 	URL       string
 	Duration  float64
 	StartTime time.Time
-	Ready     bool
 }
 
-// SegmentFile represents a complete TS segment file
-type SegmentFile struct {
-	Index    uint64
+type SegmentCache struct {
 	Data     []byte
-	Duration float64
 	Ready    bool
-}
-
-// TSSegmenter creates complete TS segment files in the background
-type TSSegmenter struct {
-	sync.Mutex
-	hlsData      *HLSData
-	queue        *pubsub.Queue
-	active       bool
-	currentIndex uint64
+	Created  time.Time
 }
 
 // HLS configuration constants
@@ -84,179 +71,6 @@ const (
 	HLSWindowSize      = 6    // number of segments to keep in playlist (increased for better buffering)
 	HLSTargetDuration  = 12.0 // target duration for HLS spec (adjusted for 6s segments)
 )
-
-// NewTSSegmenter creates a new TS segmenter for proper segment creation
-func NewTSSegmenter(hlsData *HLSData, queue *pubsub.Queue) *TSSegmenter {
-	return &TSSegmenter{
-		hlsData:      hlsData,
-		queue:        queue,
-		active:       true,
-		currentIndex: 0,
-	}
-}
-
-// Start begins the segmentation process
-func (s *TSSegmenter) Start() {
-	go s.segmentLoop()
-}
-
-// segmentLoop runs in background and creates complete TS segments
-func (s *TSSegmenter) segmentLoop() {
-	for s.active {
-		// Get the current segment index that should be created
-		s.hlsData.RLock()
-		expectedSegmentIndex := s.hlsData.mediaSequence + uint64(len(s.hlsData.segments))
-		lastSegmentTime := s.hlsData.lastSegmentTime
-		s.hlsData.RUnlock()
-		
-		// Check if it's time to create a new segment based on the HLS data timing
-		if time.Since(lastSegmentTime).Seconds() >= HLSSegmentDuration {
-			// Only create if this segment doesn't already exist
-			s.hlsData.RLock()
-			segmentExists := false
-			for _, seg := range s.hlsData.segments {
-				if seg.Index == expectedSegmentIndex {
-					segmentExists = true
-					break
-				}
-			}
-			s.hlsData.RUnlock()
-			
-			if !segmentExists {
-				s.createCompleteSegment(expectedSegmentIndex, lastSegmentTime)
-			}
-		}
-		
-		// Small delay between segment creation checks
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// createCompleteSegment creates a complete, proper TS segment
-func (s *TSSegmenter) createCompleteSegment(index uint64, startTime time.Time) {
-	// Create a buffer to capture the complete segment
-	var segmentBuffer bytes.Buffer
-	tsMuxer := ts.NewMuxer(&segmentBuffer)
-	if tsMuxer == nil {
-		common.LogErrorln("Failed to create TS muxer for complete segment")
-		return
-	}
-	
-	// Get a cursor positioned at the right time for this segment
-	cursor := s.queue.Latest()
-	if cursor == nil {
-		common.LogErrorln("Failed to get cursor for complete segment creation")
-		return
-	}
-	
-	// Create a context with the exact segment duration to get complete segment
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(HLSSegmentDuration*1000)*time.Millisecond)
-	defer cancel()
-	
-	// Use a channel to capture completion
-	done := make(chan error, 1)
-	
-	go func() {
-		// Copy exactly one segment's worth of data using the proper muxer
-		err := avutil.CopyFile(tsMuxer, cursor)
-		done <- err
-	}()
-	
-	// Wait for the complete segment to be created
-	select {
-	case err := <-done:
-		if err != nil && err != io.EOF {
-			common.LogErrorf("Error creating complete segment %d: %v\n", index, err)
-			return
-		}
-	case <-ctx.Done():
-		// This is expected - we got exactly one segment's worth of data
-	}
-	
-	// Only store the segment if we have actual data
-	if segmentBuffer.Len() > 0 {
-		s.storeCompleteSegment(index, segmentBuffer.Bytes(), startTime)
-		
-		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("TS Segmenter: Created segment %d (%d bytes) at time %v\n", 
-				index, segmentBuffer.Len(), startTime)
-		}
-	} else {
-		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("TS Segmenter: No data for segment %d, skipping\n", index)
-		}
-	}
-}
-
-// storeCompleteSegment stores a complete segment file
-func (s *TSSegmenter) storeCompleteSegment(index uint64, data []byte, startTime time.Time) {
-	// Create the complete segment file
-	segmentFile := &SegmentFile{
-		Index:    index,
-		Data:     make([]byte, len(data)),
-		Duration: HLSSegmentDuration,
-		Ready:    true,
-	}
-	copy(segmentFile.Data, data)
-	
-	s.hlsData.Lock()
-	if s.hlsData.segmentFiles == nil {
-		s.hlsData.segmentFiles = make(map[uint64]*SegmentFile)
-	}
-	s.hlsData.segmentFiles[index] = segmentFile
-	
-	// Mark corresponding segment as ready in playlist ONLY if it exists
-	segmentFound := false
-	for i := range s.hlsData.segments {
-		if s.hlsData.segments[i].Index == index {
-			s.hlsData.segments[i].Ready = true
-			segmentFound = true
-			break
-		}
-	}
-	s.hlsData.Unlock()
-	
-	// Clean up old segments
-	s.cleanupOldSegments()
-	
-	if settings != nil && settings.HLSDebugLogging {
-		common.LogInfof("TS Segmenter: Stored complete segment %d (%d bytes), manifest updated: %t\n", 
-			index, len(segmentFile.Data), segmentFound)
-	}
-}
-
-// cleanupOldSegments removes old segment files to prevent memory leaks
-func (s *TSSegmenter) cleanupOldSegments() {
-	s.hlsData.Lock()
-	defer s.hlsData.Unlock()
-	
-	if s.hlsData.segmentFiles == nil {
-		return
-	}
-	
-	// Get the set of valid segment indexes from the current manifest
-	validIndexes := make(map[uint64]bool)
-	for _, seg := range s.hlsData.segments {
-		validIndexes[seg.Index] = true
-	}
-	
-	// Remove segment files that are not in the current manifest
-	for index := range s.hlsData.segmentFiles {
-		if !validIndexes[index] {
-			delete(s.hlsData.segmentFiles, index)
-			if settings != nil && settings.HLSDebugLogging {
-				common.LogInfof("TS Segmenter: Cleaned up old segment file %d\n", index)
-			}
-		}
-	}
-}
-
-// Stop stops the segmenter
-func (s *TSSegmenter) Stop() {
-	s.Lock()
-	defer s.Unlock()
-	s.active = false
-}
 
 type writeFlusher struct {
 	httpflusher http.Flusher
@@ -658,10 +472,11 @@ func handlePublish(conn *rtmp.Conn) {
 		mediaSequence:   0,
 		segments:        make([]HLSSegment, 0),
 		lastSegmentTime: time.Now(),
-		segmentFiles:    make(map[uint64]*SegmentFile),
+		segmentCache:    make(map[uint64]*SegmentCache),
 	}
-	// Initialize the TS segmenter for creating complete segments
-	ch.hlsData.segmenter = NewTSSegmenter(ch.hlsData, ch.que)
+	
+	// Start background segment generator
+	go generateHLSSegments(ch)
 	err := ch.que.WriteHeader(streams)
 	if err != nil {
 		common.LogErrorf("Could not write header to streams: %v\n", err)
@@ -672,24 +487,11 @@ func handlePublish(conn *rtmp.Conn) {
 	stats.startStream()
 
 	common.LogInfoln("Stream started")
-	
-	// Start the TS segmenter to create complete segments
-	if ch.hlsData != nil && ch.hlsData.segmenter != nil {
-		ch.hlsData.segmenter.Start()
-		common.LogInfoln("TS segmenter started for HLS")
-	}
-	
 	err = avutil.CopyPackets(ch.que, conn)
 	if err != nil {
 		common.LogErrorf("Could not copy packets to connections: %v\n", err)
 	}
 	common.LogInfoln("Stream finished")
-	
-	// Stop the segmenter when stream ends
-	if ch.hlsData != nil && ch.hlsData.segmenter != nil {
-		ch.hlsData.segmenter.Stop()
-		common.LogInfoln("TS segmenter stopped")
-	}
 
 	stats.endStream()
 
@@ -767,10 +569,7 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 			mediaSequence:   0,
 			segments:        make([]HLSSegment, 0),
 			lastSegmentTime: time.Now(),
-			segmentFiles:    make(map[uint64]*SegmentFile),
 		}
-		// Initialize the TS segmenter for creating complete segments
-		ch.hlsData.segmenter = NewTSSegmenter(ch.hlsData, ch.que)
 	}
 
 	ch.hlsData.Lock()
@@ -791,25 +590,13 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 	playlist.TargetDuration = HLSTargetDuration
 	playlist.SeqNo = ch.hlsData.mediaSequence
 
-	// Add only ready segments to playlist - HLS compliance!
-	readySegmentCount := 0
+	// Add segments to playlist
 	for _, segment := range ch.hlsData.segments {
-		// Only include complete, ready segments in the manifest
-		if segment.Ready {
-			err := playlist.Append(segment.URL, segment.Duration, "")
-			if err != nil {
-				common.LogErrorf("Error adding segment to playlist: %v\n", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			readySegmentCount++
-		}
-	}
-	
-	// Validate that we have at least some ready segments for a live stream
-	if readySegmentCount == 0 && len(ch.hlsData.segments) > 0 {
-		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("HLS: No ready segments available yet (total segments: %d)\n", len(ch.hlsData.segments))
+		err := playlist.Append(segment.URL, segment.Duration, "")
+		if err != nil {
+			common.LogErrorf("Error adding segment to playlist: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 	}
 
@@ -826,14 +613,8 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if settings != nil && settings.HLSDebugLogging {
-		common.LogInfof("Generated HLS playlist for live: %d total segments, %d ready segments, seq: %d\n",
-			len(ch.hlsData.segments), readySegmentCount, ch.hlsData.mediaSequence)
-		
-		// Log segment details for debugging
-		for i, seg := range ch.hlsData.segments {
-			common.LogInfof("  Segment %d: Index=%d, URL=%s, Ready=%t\n", 
-				i, seg.Index, seg.URL, seg.Ready)
-		}
+		common.LogInfof("Generated HLS playlist for live: %d segments, seq: %d\n",
+			len(ch.hlsData.segments), ch.hlsData.mediaSequence)
 	}
 }
 
@@ -842,37 +623,22 @@ func updateHLSSegments(hlsData *HLSData) {
 
 	// Check if it's time for a new segment
 	if now.Sub(hlsData.lastSegmentTime).Seconds() >= HLSSegmentDuration {
-		// Calculate the next segment index
-		nextSegmentIndex := hlsData.mediaSequence + uint64(len(hlsData.segments))
-		
-		// Add new segment (initially not ready until segmenter creates complete file)
+		// Add new segment
 		newSegment := HLSSegment{
-			Index:     nextSegmentIndex,
-			URL:       fmt.Sprintf("/live_segment_%d.ts", nextSegmentIndex),
+			Index:     hlsData.mediaSequence + uint64(len(hlsData.segments)),
+			URL:       fmt.Sprintf("/live_segment_%d.ts", hlsData.mediaSequence+uint64(len(hlsData.segments))),
 			Duration:  HLSSegmentDuration,
 			StartTime: now,
-			Ready:     false, // Will be set to true when complete segment is created
 		}
 
 		hlsData.segments = append(hlsData.segments, newSegment)
 		hlsData.lastSegmentTime = now
 
-		// Maintain sliding window - but be careful with media sequence
+		// Maintain sliding window
 		if len(hlsData.segments) > HLSWindowSize {
 			// Remove oldest segment and increment media sequence
-			removedSegment := hlsData.segments[0]
 			hlsData.segments = hlsData.segments[1:]
 			hlsData.mediaSequence++
-			
-			// Also clean up the segment file for the removed segment
-			if hlsData.segmentFiles != nil {
-				delete(hlsData.segmentFiles, removedSegment.Index)
-			}
-			
-			if settings != nil && settings.HLSDebugLogging {
-				common.LogInfof("HLS: Removed old segment %d, new media sequence: %d\n", 
-					removedSegment.Index, hlsData.mediaSequence)
-			}
 		}
 
 		if settings != nil && settings.HLSDebugLogging {
@@ -888,6 +654,103 @@ func getSegmentIndexes(segments []HLSSegment) []uint64 {
 		indexes[i] = seg.Index
 	}
 	return indexes
+}
+
+// generateHLSSegments runs in background to pre-generate complete segments
+func generateHLSSegments(ch *Channel) {
+	ticker := time.NewTicker(500 * time.Millisecond) // Check every 500ms
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		if ch.que == nil || ch.hlsData == nil {
+			continue
+		}
+		
+		ch.hlsData.RLock()
+		needsGeneration := make([]uint64, 0)
+		
+		// Check which segments need to be generated
+		for _, seg := range ch.hlsData.segments {
+			if cache, exists := ch.hlsData.segmentCache[seg.Index]; !exists || !cache.Ready {
+				needsGeneration = append(needsGeneration, seg.Index)
+			}
+		}
+		ch.hlsData.RUnlock()
+		
+		// Generate missing segments
+		for _, segmentIndex := range needsGeneration {
+			generateSingleSegment(ch, segmentIndex)
+		}
+		
+		// Clean up old segments
+		cleanupOldSegments(ch)
+	}
+}
+
+// generateSingleSegment creates one complete segment in background
+func generateSingleSegment(ch *Channel, segmentIndex uint64) {
+	var segmentBuffer bytes.Buffer
+	tsMuxer := ts.NewMuxer(&segmentBuffer)
+	if tsMuxer == nil {
+		return
+	}
+	
+	cursor := ch.que.Latest()
+	if cursor == nil {
+		return
+	}
+	
+	// Use timeout to prevent infinite blocking
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	
+	done := make(chan error, 1)
+	go func() {
+		done <- avutil.CopyFile(tsMuxer, cursor)
+	}()
+	
+	select {
+	case <-done:
+		// Segment completed
+		if segmentBuffer.Len() > 0 {
+			ch.hlsData.Lock()
+			if ch.hlsData.segmentCache == nil {
+				ch.hlsData.segmentCache = make(map[uint64]*SegmentCache)
+			}
+			ch.hlsData.segmentCache[segmentIndex] = &SegmentCache{
+				Data:    segmentBuffer.Bytes(),
+				Ready:   true,
+				Created: time.Now(),
+			}
+			ch.hlsData.Unlock()
+		}
+	case <-ctx.Done():
+		// Timeout - that's ok, try again later
+		return
+	}
+}
+
+// cleanupOldSegments removes segments that are no longer in the manifest
+func cleanupOldSegments(ch *Channel) {
+	ch.hlsData.Lock()
+	defer ch.hlsData.Unlock()
+	
+	if ch.hlsData.segmentCache == nil {
+		return
+	}
+	
+	// Get current valid segment indexes
+	validIndexes := make(map[uint64]bool)
+	for _, seg := range ch.hlsData.segments {
+		validIndexes[seg.Index] = true
+	}
+	
+	// Remove segments not in current window
+	for index := range ch.hlsData.segmentCache {
+		if !validIndexes[index] {
+			delete(ch.hlsData.segmentCache, index)
+		}
+	}
 }
 
 func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
@@ -906,9 +769,15 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	ch := channels["live"]
 	l.RUnlock()
 
-	// Comprehensive validation with nil checks
+	// Comprehensive validation with nil checks to prevent segfaults
 	if ch == nil {
 		common.LogInfoln("HLS segment request for non-existent channel")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if ch.que == nil {
+		common.LogInfoln("HLS segment request for channel with nil queue")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -920,50 +789,102 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ch.hlsData.RLock()
-	// Check if segment exists and is ready
-	var segmentFile *SegmentFile
-	var segmentExists bool
-	
-	// First check if segment is in the current window
+	// Validate segment is in current window
+	validSegment := false
 	for _, seg := range ch.hlsData.segments {
-		if seg.Index == segmentNum && seg.Ready {
-			segmentExists = true
+		if seg.Index == segmentNum {
+			validSegment = true
 			break
 		}
 	}
 	
-	// Get the complete segment file
-	if segmentExists && ch.hlsData.segmentFiles != nil {
-		if file, exists := ch.hlsData.segmentFiles[segmentNum]; exists && file.Ready {
-			segmentFile = file
+	// Check if we have a pre-generated segment ready
+	var segmentData []byte
+	if validSegment && ch.hlsData.segmentCache != nil {
+		if cache, exists := ch.hlsData.segmentCache[segmentNum]; exists && cache.Ready && len(cache.Data) > 0 {
+			segmentData = cache.Data
 		}
 	}
 	ch.hlsData.RUnlock()
 
-	// Only serve complete, ready segments - HLS compliance!
-	if !segmentExists || segmentFile == nil || len(segmentFile.Data) == 0 {
-		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("Requested segment %d not ready or not found\n", segmentNum)
-		}
+	if !validSegment {
+		common.LogInfof("Requested segment %d not in current window\n", segmentNum)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// Serve the COMPLETE segment file - this is HLS compliant
-	w.Header().Set("Content-Type", "video/mp2t")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache complete segments
-	w.Header().Set("Content-Length", strconv.Itoa(len(segmentFile.Data)))
-	w.WriteHeader(http.StatusOK)
-
-	// Write the complete segment data in one go - no partial data!
-	_, err = w.Write(segmentFile.Data)
-	if err != nil && !isConnectionClosedError(err) {
-		common.LogErrorf("Error writing complete HLS segment %d: %v\n", segmentNum, err)
+	// If we have pre-generated data, serve it immediately
+	if len(segmentData) > 0 {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Content-Length", strconv.Itoa(len(segmentData)))
+		w.WriteHeader(http.StatusOK)
+		
+		_, err := w.Write(segmentData)
+		if err != nil {
+			common.LogErrorf("Error writing pre-generated HLS segment %d: %v\n", segmentNum, err)
+		}
+		
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("Served pre-generated HLS segment %d (%d bytes)\n", segmentNum, len(segmentData))
+		}
+		return
 	}
 
-	if settings != nil && settings.HLSDebugLogging {
-		common.LogInfof("HLS segment %d served as complete file (%d bytes)\n", segmentNum, len(segmentFile.Data))
+	// Fallback: generate segment on-demand with short timeout to prevent hitching
+	w.Header().Set("Content-Type", "video/mp2t")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "max-age=10")
+	w.WriteHeader(http.StatusOK)
+
+	// Get HTTP flusher
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		common.LogErrorln("ResponseWriter does not support flushing")
+		return
+	}
+
+	// Very short timeout to prevent hitching
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	// Create write flusher
+	wf := createProtectedWriteFlusher(w, flusher, ctx)
+
+	// Use TS muxer
+	tsMuxer := ts.NewMuxer(wf)
+	if tsMuxer == nil {
+		common.LogErrorln("Failed to create TS muxer")
+		return
+	}
+
+	// Get cursor
+	cursor := ch.que.Latest()
+	if cursor == nil {
+		common.LogErrorln("Failed to get latest cursor from queue")
+		return
+	}
+
+	// Stream with short timeout to prevent blocking
+	done := make(chan error, 1)
+	go func() {
+		done <- avutil.CopyFile(tsMuxer, cursor)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil && !isConnectionClosedError(err) {
+			common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
+		}
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS segment %d completed (fallback)\n", segmentNum)
+		}
+	case <-ctx.Done():
+		// Short timeout hit - this prevents hitching
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS segment %d timeout (preventing hitch)\n", segmentNum)
+		}
 	}
 }
 

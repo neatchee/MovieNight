@@ -132,11 +132,13 @@ func TestHLSDataInitialization(t *testing.T) {
 		mediaSequence:   0,
 		segments:        make([]HLSSegment, 0),
 		lastSegmentTime: time.Now(),
+		segmentCache:    make(map[uint64]*SegmentCache),
 	}
 
 	assert.NotNil(t, ch.hlsData)
 	assert.Equal(t, uint64(0), ch.hlsData.mediaSequence)
 	assert.Equal(t, 0, len(ch.hlsData.segments))
+	assert.NotNil(t, ch.hlsData.segmentCache)
 }
 
 func TestHLSRoutePattern(t *testing.T) {
@@ -310,6 +312,7 @@ func TestHLSConcurrentAccess(t *testing.T) {
 		mediaSequence:   0,
 		segments:        make([]HLSSegment, 0),
 		lastSegmentTime: time.Now().Add(-7 * time.Second),
+		segmentCache:    make(map[uint64]*SegmentCache),
 	}
 	
 	// Simulate concurrent operations (like multiple client requests and segment updates)
@@ -352,4 +355,67 @@ func TestHLSConcurrentAccess(t *testing.T) {
 	
 	assert.GreaterOrEqual(t, finalSegmentCount, 1)
 	assert.LessOrEqual(t, finalSegmentCount, HLSWindowSize)
+}
+
+func TestHLSSegmentCaching(t *testing.T) {
+	// Test segment caching functionality for smooth playback
+	hlsData := &HLSData{
+		mediaSequence:   0,
+		segments:        make([]HLSSegment, 0),
+		lastSegmentTime: time.Now(),
+		segmentCache:    make(map[uint64]*SegmentCache),
+	}
+	
+	// Add a test segment
+	hlsData.segments = append(hlsData.segments, HLSSegment{
+		Index:     0,
+		URL:       "/live_segment_0.ts",
+		Duration:  HLSSegmentDuration,
+		StartTime: time.Now(),
+	})
+	
+	// Add cached segment data
+	testData := []byte("test segment data")
+	hlsData.segmentCache[0] = &SegmentCache{
+		Data:    testData,
+		Ready:   true,
+		Created: time.Now(),
+	}
+	
+	// Verify cache works
+	cache, exists := hlsData.segmentCache[0]
+	assert.True(t, exists)
+	assert.True(t, cache.Ready)
+	assert.Equal(t, testData, cache.Data)
+}
+
+func TestCleanupOldSegments(t *testing.T) {
+	// Test cleanup functionality to prevent memory leaks
+	hlsData := &HLSData{
+		mediaSequence: 5,
+		segments: []HLSSegment{
+			{Index: 5, URL: "/live_segment_5.ts"},
+			{Index: 6, URL: "/live_segment_6.ts"},
+			{Index: 7, URL: "/live_segment_7.ts"},
+		},
+		segmentCache: map[uint64]*SegmentCache{
+			3: {Data: []byte("old"), Ready: true}, // Should be cleaned
+			4: {Data: []byte("old"), Ready: true}, // Should be cleaned
+			5: {Data: []byte("current"), Ready: true}, // Should remain
+			6: {Data: []byte("current"), Ready: true}, // Should remain
+			7: {Data: []byte("current"), Ready: true}, // Should remain
+		},
+	}
+	
+	ch := &Channel{hlsData: hlsData}
+	cleanupOldSegments(ch)
+	
+	// Verify old segments are cleaned up
+	assert.NotContains(t, hlsData.segmentCache, uint64(3))
+	assert.NotContains(t, hlsData.segmentCache, uint64(4))
+	
+	// Verify current segments remain
+	assert.Contains(t, hlsData.segmentCache, uint64(5))
+	assert.Contains(t, hlsData.segmentCache, uint64(6))
+	assert.Contains(t, hlsData.segmentCache, uint64(7))
 }
