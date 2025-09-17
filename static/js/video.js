@@ -422,7 +422,7 @@ function tryMpegTSPlayer(videoElement) {
         }, {
             isLive: true,
             liveBufferLatencyChasing: true,
-            autoCleanupSourceBuffer: true,
+            autoCleanupSourceBuffer: false,
         });
         
         flvPlayer.attachMediaElement(videoElement);
@@ -459,6 +459,12 @@ function destroyCurrentPlayer() {
                 currentPlayer.instance.destroy();
                 console.log('HLS player destroyed and cleaned up');
             } else if (currentPlayer.type === 'mpegts') {
+                // Proper MPEG-TS cleanup sequence to prevent SourceBuffer abort issues
+                // First pause to stop any ongoing operations  
+                currentPlayer.instance.pause();
+                // Then unload to clean up MediaSource properly
+                currentPlayer.instance.unload();
+                // Finally destroy the instance
                 currentPlayer.instance.destroy();
                 console.log('MPEG-TS player destroyed and cleaned up');
             }
