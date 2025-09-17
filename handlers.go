@@ -67,12 +67,23 @@ const (
 type writeFlusher struct {
 	httpflusher http.Flusher
 	io.Writer
+	ctx context.Context
 }
 
-// Write with comprehensive nil protection to prevent segfaults
+// Write with comprehensive nil protection and connection state checking
 func (w writeFlusher) Write(p []byte) (n int, err error) {
 	if w.Writer == nil {
 		return 0, errors.New("writer is nil")
+	}
+	
+	// Check if the context is cancelled (connection closed)
+	if w.ctx != nil {
+		select {
+		case <-w.ctx.Done():
+			return 0, errors.New("connection closed by client")
+		default:
+			// Connection is still active
+		}
 	}
 	
 	defer func() {
@@ -84,6 +95,8 @@ func (w writeFlusher) Write(p []byte) (n int, err error) {
 	
 	return w.Writer.Write(p)
 }
+
+
 
 // Flush with comprehensive nil protection to prevent segfaults
 func (w writeFlusher) Flush() error {
@@ -694,8 +707,12 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Create write flusher with comprehensive nil protection
-	wf := createProtectedWriteFlusher(w, flusher)
+	// Create context with timeout to prevent infinite streaming
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(HLSSegmentDuration + 2) * time.Second)
+	defer cancel()
+	
+	// Create write flusher with comprehensive nil protection and context awareness
+	wf := createProtectedWriteFlusher(w, flusher, ctx)
 	
 	// Use TS muxer instead of FLV to fix fragParsingError
 	tsMuxer := ts.NewMuxer(wf)
@@ -711,36 +728,74 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Create context with timeout to prevent infinite streaming
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(HLSSegmentDuration + 2) * time.Second)
-	defer cancel()
+	// Stream video data with connection monitoring
+	done := make(chan error, 1)
 	
-	// Copy video data with time-bounded streaming
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				common.LogErrorf("Recovered from panic in HLS segment handler: %v\n", r)
+				done <- fmt.Errorf("panic recovered: %v", r)
+				return
 			}
 		}()
 		
-		err := avutil.CopyFile(tsMuxer, cursor)
-		if err != nil {
-			common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
+		// Monitor context during copy operation
+		copyCtx, copyCancel := context.WithCancel(ctx)
+		defer copyCancel()
+		
+		// Start the copy operation in a separate goroutine
+		copyDone := make(chan error, 1)
+		go func() {
+			copyDone <- avutil.CopyFile(tsMuxer, cursor)
+		}()
+		
+		// Monitor for context cancellation or copy completion
+		select {
+		case err := <-copyDone:
+			done <- err
+		case <-copyCtx.Done():
+			done <- copyCtx.Err()
 		}
 	}()
 	
-	// Wait for either completion or timeout
+	// Wait for either completion, timeout, or client disconnect
 	select {
+	case err := <-done:
+		if err != nil {
+			if !isConnectionClosedError(err) {
+				common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
+			}
+		}
+		common.LogInfof("HLS segment %d completed\n", segmentNum)
 	case <-ctx.Done():
-		common.LogInfof("HLS segment %d completed/timed out\n", segmentNum)
+		if ctx.Err() == context.DeadlineExceeded {
+			common.LogInfof("HLS segment %d timed out\n", segmentNum)
+		} else {
+			common.LogInfof("HLS segment %d cancelled (client disconnected)\n", segmentNum)
+		}
 	}
 }
 
+
+// isConnectionClosedError checks if an error is due to a closed connection
+func isConnectionClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection closed") ||
+		   strings.Contains(errStr, "broken pipe") ||
+		   strings.Contains(errStr, "writer panic recovered") ||
+		   strings.Contains(errStr, "use of closed network connection")
+}
+
 // createProtectedWriteFlusher creates a write flusher with comprehensive nil protection
-func createProtectedWriteFlusher(w http.ResponseWriter, flusher http.Flusher) writeFlusher {
+func createProtectedWriteFlusher(w http.ResponseWriter, flusher http.Flusher, ctx context.Context) writeFlusher {
 	return writeFlusher{
 		httpflusher: flusher,
 		Writer:      w,
+		ctx:         ctx,
 	}
 }
 
