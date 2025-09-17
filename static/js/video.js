@@ -423,6 +423,10 @@ function tryMpegTSPlayer(videoElement) {
             isLive: true,
             liveBufferLatencyChasing: true,
             autoCleanupSourceBuffer: false,
+            enableWorker: false,
+            reuseRedirectedURL: true,
+            deferLoadAfterSourceOpen: false,
+            fixAudioTimestampGap: false,
         });
         
         flvPlayer.attachMediaElement(videoElement);
@@ -460,13 +464,30 @@ function destroyCurrentPlayer() {
                 console.log('HLS player destroyed and cleaned up');
             } else if (currentPlayer.type === 'mpegts') {
                 // Proper MPEG-TS cleanup sequence to prevent SourceBuffer abort issues
-                // First pause to stop any ongoing operations  
-                currentPlayer.instance.pause();
-                // Then unload to clean up MediaSource properly
-                currentPlayer.instance.unload();
-                // Finally destroy the instance
-                currentPlayer.instance.destroy();
-                console.log('MPEG-TS player destroyed and cleaned up');
+                try {
+                    // First pause to stop any ongoing operations  
+                    currentPlayer.instance.pause();
+                    // Then unload to clean up MediaSource properly
+                    currentPlayer.instance.unload();
+                    // Add a small delay to allow pending operations to complete
+                    setTimeout(() => {
+                        try {
+                            // Finally destroy the instance
+                            currentPlayer.instance.destroy();
+                            console.log('MPEG-TS player destroyed and cleaned up');
+                        } catch (e) {
+                            console.warn('Error during delayed MPEG-TS destroy:', e);
+                        }
+                    }, 100);
+                } catch (e) {
+                    console.warn('Error during MPEG-TS cleanup:', e);
+                    // Fallback - try to destroy immediately
+                    try {
+                        currentPlayer.instance.destroy();
+                    } catch (e2) {
+                        console.warn('Error during fallback MPEG-TS destroy:', e2);
+                    }
+                }
             }
         } catch (error) {
             console.error('Error destroying player:', error);
