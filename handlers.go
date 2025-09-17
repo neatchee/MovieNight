@@ -3,16 +3,19 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/zorchenhimer/MovieNight/common"
 
+	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/gorilla/websocket"
 	"github.com/nareix/joy4/av/avutil"
 	"github.com/nareix/joy4/av/pubsub"
@@ -29,10 +32,27 @@ var (
 
 	// Map of active streams
 	channels = map[string]*Channel{}
+	
+	// HLS-related variables
+	hlsSegments = make(map[string]*HLSStreamData)
+	hlsMutex    = &sync.RWMutex{}
 )
 
 type Channel struct {
 	que *pubsub.Queue
+}
+
+type HLSStreamData struct {
+	playlist     *m3u8.MediaPlaylist
+	segments     []HLSSegment
+	segmentCount int
+	mutex        sync.RWMutex
+}
+
+type HLSSegment struct {
+	data     []byte
+	duration float64
+	sequence int
 }
 
 type writeFlusher struct {
@@ -483,28 +503,107 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Create a simple HLS playlist with a single ongoing segment
-	// This is a basic implementation that references the live stream
+	hlsMutex.RLock()
+	hlsStream, exists := hlsSegments[streamPath]
+	hlsMutex.RUnlock()
+	
+	if !exists {
+		// Initialize HLS stream data
+		hlsMutex.Lock()
+		playlist, err := m3u8.NewMediaPlaylist(10, 10) // 10 segments window, 10 max segments
+		if err != nil {
+			hlsMutex.Unlock()
+			common.LogErrorf("Could not create HLS playlist: %v\n", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		playlist.SetVersion(3)
+		playlist.SetTargetDuration(10)
+		
+		hlsStream = &HLSStreamData{
+			playlist:     playlist,
+			segments:     make([]HLSSegment, 0),
+			segmentCount: 0,
+		}
+		hlsSegments[streamPath] = hlsStream
+		hlsMutex.Unlock()
+	}
+	
+	hlsStream.mutex.RLock()
+	defer hlsStream.mutex.RUnlock()
+	
+	// For now, create a simple playlist that references the live stream as one segment
+	// In a full implementation, this would have multiple TS segments
+	playlist, err := m3u8.NewMediaPlaylist(10, 10)
+	if err != nil {
+		common.LogErrorf("Could not create HLS playlist: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	playlist.SetVersion(3)
+	playlist.SetTargetDuration(10)
+	
+	// Add a segment referencing the live stream
+	err = playlist.Append(fmt.Sprintf("/live_segment_%d.ts", 0), 10.0, "")
+	if err != nil {
+		common.LogErrorf("Could not append segment to playlist: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	
-	playlist := `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:10
-#EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:10.0,
-/live
-#EXT-X-ENDLIST`
-	
-	w.Write([]byte(playlist))
+	playlistContent := playlist.String()
+	w.Write([]byte(playlistContent))
 }
 
 // HLS segment handler (simplified - redirects to live stream)
 func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
-	// For now, redirect segment requests to the main live stream
-	// In a full implementation, this would serve actual TS segments
-	http.Redirect(w, r, "/live", http.StatusFound)
+	path := strings.Trim(r.URL.Path, "/")
+	parts := strings.Split(path, "_")
+	if len(parts) < 3 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	
+	streamPath := parts[0]
+	segmentNumStr := strings.TrimSuffix(parts[2], ".ts")
+	_, err := strconv.Atoi(segmentNumStr)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	
+	l.RLock()
+	ch := channels[streamPath]
+	l.RUnlock()
+	
+	if ch == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	// For simplified implementation, serve the live stream as TS format
+	w.Header().Set("Content-Type", "video/mp2t")
+	w.Header().Set("Cache-Control", "max-age=10")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(200)
+	
+	flusher := w.(http.Flusher)
+	flusher.Flush()
+	
+	muxer := flv.NewMuxerWriteFlusher(writeFlusher{httpflusher: flusher, Writer: w})
+	cursor := ch.que.Latest()
+	
+	session, _ := sstore.Get(r, "moviesession")
+	stats.addViewer(session.ID)
+	err = avutil.CopyFile(muxer, cursor)
+	if err != nil {
+		common.LogErrorf("Could not copy video to HLS segment connection: %v\n", err)
+	}
+	stats.removeViewer(session.ID)
 }
 
 func wrapAuth(next http.HandlerFunc) http.HandlerFunc {
