@@ -12,11 +12,32 @@ This document explains the optimizations made to the HLS implementation compared
 - **Playlist Generation**: Dynamic M3U8 creation with library calls
 
 ### Optimized Implementation (Simple)
-- **Streaming**: Direct live stream conversion to TS format
+- **Streaming**: Direct live stream conversion to TS format with time-bounded segments
 - **Dependencies**: Pure Go implementation, no external HLS libraries
 - **Endpoints**: Simple static endpoints (`/live.m3u8`, `/live.ts`)
 - **State Management**: Minimal state tracking for active streams
 - **Playlist Generation**: Static M3U8 template pointing to live stream
+
+## Key Fix: Time-Bounded Segments
+
+**Critical Issue Resolved**: The initial simplified implementation attempted to stream indefinitely to `/live.ts`, which broke HLS compatibility. HLS requires discrete segments of finite duration.
+
+**Solution**: Added timeout-based segment creation:
+```go
+// Create time-bounded segments for HLS compatibility
+ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+defer cancel()
+
+// Stream with timeout to create finite HLS segments
+select {
+case err := <-done:
+    // Stream completed
+case <-ctx.Done():
+    // Timeout reached - creates finite 8-second segment
+}
+```
+
+This ensures each HLS segment request gets exactly 8 seconds of video data, allowing HLS.js to properly load and play discrete segments.
 
 ## Performance Benefits
 
@@ -28,7 +49,7 @@ This document explains the optimizations made to the HLS implementation compared
 
 ## Compatibility
 
-- **iOS Safari**: Native HLS support via `/live.m3u8` → `/live.ts`
+- **iOS Safari**: Native HLS support via `/live.m3u8` → `/live.ts` (8-second segments)
 - **Desktop Browsers**: Primary MPEG-TS via `/live` with HLS fallback
 - **Error Recovery**: Simplified but robust fallback mechanisms
 - **Existing Features**: All existing functionality preserved

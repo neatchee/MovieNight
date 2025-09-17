@@ -67,9 +67,9 @@ func TestSimplifiedVsComplexImplementation(t *testing.T) {
 	// Verify our simplified playlist format
 	expectedPlaylist := `#EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:30
+#EXT-X-TARGETDURATION:10
 #EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:30.0,
+#EXTINF:8.0,
 /live.ts
 `
 	

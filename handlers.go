@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -549,15 +550,15 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	// Simplified playlist - single segment pointing to live stream
 	playlist := `#EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:30
+#EXT-X-TARGETDURATION:10
 #EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:30.0,
+#EXTINF:8.0,
 /live.ts
 `
 	w.Write([]byte(playlist))
 }
 
-// Simplified HLS stream handler - serves live stream as TS
+// Simplified HLS stream handler - serves live stream as TS segments with timeout
 func handleHLSStream(w http.ResponseWriter, r *http.Request) {
 	// Extract stream path - simplified from segment parsing
 	streamPath := "live" // Default to live stream
@@ -599,10 +600,27 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request) {
 	stats.addViewer(session.ID)
 	defer stats.removeViewer(session.ID)
 	
-	// Stream with enhanced error handling
-	err := avutil.CopyFile(tsMuxer, cursor)
-	if err != nil {
-		common.LogErrorf("Could not copy video to HLS TS connection: %v\n", err)
+	// CRITICAL: Create time-bounded segments for HLS compatibility
+	// HLS requires discrete segments, not infinite streams
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	
+	// Stream with timeout to create finite HLS segments
+	done := make(chan error, 1)
+	go func() {
+		done <- avutil.CopyFile(tsMuxer, cursor)
+	}()
+	
+	// Wait for either completion or timeout to create finite segments
+	select {
+	case err := <-done:
+		if err != nil {
+			common.LogErrorf("Could not copy video to HLS TS connection: %v\n", err)
+		}
+	case <-ctx.Done():
+		// Timeout reached - this creates a time-bounded segment
+		// This is essential for HLS as each segment must have finite duration
+		break
 	}
 }
 
