@@ -600,10 +600,21 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Set response headers
+	// Set response headers for HLS manifest
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	// Standard HLS manifest caching - short lived but allows revalidation
+	w.Header().Set("Cache-Control", "max-age=1")
+	// Add ETag based on media sequence to help clients avoid unnecessary re-downloads
+	etag := fmt.Sprintf(`"%d-%d"`, ch.hlsData.mediaSequence, len(ch.hlsData.segments))
+	w.Header().Set("ETag", etag)
+	
+	// Check if client already has this version
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	
 	w.WriteHeader(http.StatusOK)
 
 	// Write playlist
@@ -620,9 +631,13 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 
 func updateHLSSegments(hlsData *HLSData) {
 	now := time.Now()
+	timeSinceLastSegment := now.Sub(hlsData.lastSegmentTime).Seconds()
 
-	// Check if it's time for a new segment
-	if now.Sub(hlsData.lastSegmentTime).Seconds() >= HLSSegmentDuration {
+	// Add new segment when we're past half the segment duration (3 seconds for 6s segments)
+	// OR if we're significantly behind (past full duration)
+	shouldAddSegment := timeSinceLastSegment >= 3.0 || timeSinceLastSegment >= HLSSegmentDuration
+	
+	if shouldAddSegment {
 		// Add new segment
 		newSegment := HLSSegment{
 			Index:     hlsData.mediaSequence + uint64(len(hlsData.segments)),
@@ -642,8 +657,8 @@ func updateHLSSegments(hlsData *HLSData) {
 		}
 
 		if settings != nil && settings.HLSDebugLogging {
-			common.LogInfof("HLS: Added segment %d, current seq: %d, window: %v\n",
-				newSegment.Index, hlsData.mediaSequence, getSegmentIndexes(hlsData.segments))
+			common.LogInfof("HLS: Added segment %d (after %.1fs), current seq: %d, window: %v\n",
+				newSegment.Index, timeSinceLastSegment, hlsData.mediaSequence, getSegmentIndexes(hlsData.segments))
 		}
 	}
 }
