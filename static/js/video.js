@@ -89,32 +89,36 @@ function tryHLSPlayer(videoElement) {
                 // Live streaming configuration following HLS.js best practices
                 // Remove progressive mode - it's for MP4, not live HLS
                 
-                // Buffer management optimized for live streaming
-                maxBufferLength: 30,        // 30 seconds of buffer for live streams
-                maxMaxBufferLength: 60,     // Maximum buffer size
-                maxBufferSize: 60 * 1000 * 1000, // 60MB buffer size limit
-                maxBufferHole: 0.5,         // Allow larger buffer holes for live streams
+                // Buffer management optimized for smooth segment transitions
+                maxBufferLength: 20,        // Reduced to 20s for faster transitions
+                maxMaxBufferLength: 40,     // Reduced maximum buffer for tighter control
+                maxBufferSize: 40 * 1000 * 1000, // 40MB buffer size limit (reduced)
+                maxBufferHole: 0.3,         // Tighter buffer hole tolerance for smoother transitions
+                backBufferLength: 10,       // Keep 10s of backward buffer for seamless seeking
                 
-                // Live streaming specific settings
-                liveSyncDurationCount: 3,   // Stay close to live edge (3 segments = 18s)
-                liveMaxLatencyDurationCount: 10, // Maximum acceptable latency (10 segments = 60s)
+                // Live streaming specific settings optimized for segment transitions
+                liveSyncDurationCount: 2,   // Stay very close to live edge (2 segments = 12s)
+                liveMaxLatencyDurationCount: 6, // Tighter maximum latency (6 segments = 36s)
                 liveDurationInfinity: true, // Allow infinite duration for live streams
                 
-                // Fragment loading optimized for live
-                fragLoadingTimeOut: 20000,  // 20s timeout for 6s segments  
-                fragLoadingMaxRetry: 3,     // Reduced retries for faster recovery
-                fragLoadingRetryDelay: 1000, // 1s delay between retries
+                // Segment transition optimization
+                startOnSegmentBoundary: true, // Align playback with segment boundaries
                 
-                // Manifest loading
-                manifestLoadingTimeOut: 10000, // 10s manifest timeout
-                manifestLoadingMaxRetry: 3,     // Fewer manifest retries
-                manifestLoadingRetryDelay: 1000, // 1s delay
+                // Fragment loading optimized for seamless transitions
+                fragLoadingTimeOut: 15000,  // Reduced timeout for faster recovery  
+                fragLoadingMaxRetry: 2,     // Fewer retries for faster transition recovery
+                fragLoadingRetryDelay: 500, // Faster retry for segment transitions
                 
-                // Error recovery optimized for live streams
-                fragLoadingMaxRetryTimeout: 64000, // Maximum retry timeout
-                levelLoadingTimeOut: 10000,  // Level loading timeout
-                levelLoadingMaxRetry: 4,     // Level loading retries
-                levelLoadingRetryDelay: 1000, // Level retry delay
+                // Manifest loading optimized for faster transitions
+                manifestLoadingTimeOut: 8000, // Faster manifest timeout
+                manifestLoadingMaxRetry: 2,     // Fewer manifest retries for faster recovery
+                manifestLoadingRetryDelay: 500, // Faster retry delay
+                
+                // Error recovery optimized for segment transitions
+                fragLoadingMaxRetryTimeout: 30000, // Reduced maximum retry timeout
+                levelLoadingTimeOut: 8000,  // Faster level loading timeout
+                levelLoadingMaxRetry: 3,     // Level loading retries
+                levelLoadingRetryDelay: 500, // Faster level retry delay
                 
                 // Start configuration
                 startLevel: -1,              // Auto-select start level
@@ -147,6 +151,8 @@ function tryHLSPlayer(videoElement) {
             let connectionState = 'connecting';
             let retryCount = 0;
             let stalledRecoveryTimeout = null;
+            let lastSegmentBoundary = 0;
+            let transitionMonitoringEnabled = true;
             
             hls.on(Hls.Events.MANIFEST_LOADED, () => {
                 console.log('HLS manifest loaded successfully');
@@ -212,8 +218,42 @@ function tryHLSPlayer(videoElement) {
             
             hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
                 lastBufferUpdate = Date.now();
+                
+                // Enhanced buffer transition monitoring
+                if (data.frag && transitionMonitoringEnabled) {
+                    const segmentIndex = data.frag.sn;
+                    
+                    // Monitor segment boundaries for smooth transitions
+                    if (segmentIndex !== lastSegmentBoundary) {
+                        lastSegmentBoundary = segmentIndex;
+                        
+                        // Log segment transitions for debugging (every 5th segment)
+                        if (segmentIndex % 5 === 0) {
+                            const bufferLength = videoElement.buffered.length > 0 ? 
+                                Math.round(videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime) : 0;
+                            console.log(`HLS segment transition: ${segmentIndex}, buffer: ${bufferLength}s`);
+                        }
+                        
+                        // Check for buffer health during transitions
+                        const bufferInfo = hls.bufferStall || {};
+                        if (bufferInfo.audio !== undefined || bufferInfo.video !== undefined) {
+                            console.log('Buffer stall detected during segment transition, implementing recovery');
+                            // Trigger buffer flush for clean transition
+                            try {
+                                hls.trigger(Hls.Events.BUFFER_FLUSHING, {
+                                    startOffset: 0,
+                                    endOffset: Number.POSITIVE_INFINITY,
+                                    type: 'video'
+                                });
+                            } catch (e) {
+                                console.warn('Buffer flush during transition failed:', e);
+                            }
+                        }
+                    }
+                }
+                
                 // Monitor buffer health but don't spam logs
-                if (data.frag && data.frag.sn % 5 === 0) {
+                if (data.frag && data.frag.sn % 10 === 0) {
                     console.log(`HLS buffer health: ${Math.round(videoElement.buffered.length > 0 ? videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime : 0)}s ahead`);
                 }
             });
@@ -223,24 +263,80 @@ function tryHLSPlayer(videoElement) {
                 connectionState = 'ended';
             });
             
-            // Enhanced buffer stall detection and recovery
+            // Enhanced buffer management for segment transitions
+            hls.on(Hls.Events.BUFFER_FLUSHING, (event, data) => {
+                console.log('HLS buffer flushing for clean transition');
+            });
+            
+            hls.on(Hls.Events.BUFFER_FLUSHED, (event, data) => {
+                console.log('HLS buffer flushed successfully');
+                lastBufferUpdate = Date.now();
+            });
+            
+            // Handle discontinuities in stream for seamless transitions
+            hls.on(Hls.Events.LEVEL_PTS_UPDATED, (event, data) => {
+                // PTS discontinuity detected - ensure smooth transition
+                if (data.drift && Math.abs(data.drift) > 1000) {
+                    console.log(`PTS discontinuity detected: ${data.drift}ms, adjusting for smooth transition`);
+                }
+            });
+            
+            // Enhanced audio/video track handling during transitions
+            hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (event, data) => {
+                console.log(`Audio track switching during transition: ${data.id}`);
+            });
+            
+            hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (event, data) => {
+                console.log(`Audio track switched: ${data.id}`);
+                lastBufferUpdate = Date.now();
+            });
+            
+            // Enhanced buffer stall detection and recovery for segment transitions
             hls.on(Hls.Events.BUFFER_STALLED, () => {
-                console.warn('HLS buffer stalled, implementing recovery strategy');
+                console.warn('HLS buffer stalled during segment transition, implementing enhanced recovery');
                 
-                // Implement progressive recovery strategy
+                // Progressive recovery strategy optimized for segment transitions
                 if (!stalledRecoveryTimeout) {
                     stalledRecoveryTimeout = setTimeout(() => {
                         if (connectionState === 'playing' && currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
-                            console.log('Attempting buffer stall recovery...');
+                            console.log('Attempting segment transition stall recovery...');
                             try {
+                                // First try buffer reset for clean transition
                                 hls.trigger(Hls.Events.BUFFER_RESET);
-                                hls.startLoad();
+                                
+                                // Then restart loading from current position
+                                const currentTime = videoElement.currentTime;
+                                hls.startLoad(currentTime);
+                                
+                                // Monitor recovery progress
+                                const recoveryMonitor = setTimeout(() => {
+                                    const bufferLength = videoElement.buffered.length > 0 ? 
+                                        videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime : 0;
+                                    
+                                    if (bufferLength < 2) {
+                                        console.warn('Recovery progress slow, triggering emergency recovery');
+                                        try {
+                                            // Emergency recovery: seek to current position to force refresh
+                                            videoElement.currentTime = videoElement.currentTime + 0.1;
+                                        } catch (e) {
+                                            console.warn('Emergency recovery failed:', e);
+                                        }
+                                    }
+                                }, 3000);
+                                
+                                // Clear recovery monitor when buffer updates
+                                const clearRecoveryMonitor = () => {
+                                    clearTimeout(recoveryMonitor);
+                                    hls.off(Hls.Events.BUFFER_APPENDED, clearRecoveryMonitor);
+                                };
+                                hls.on(Hls.Events.BUFFER_APPENDED, clearRecoveryMonitor);
+                                
                             } catch (e) {
-                                console.warn('Buffer stall recovery failed:', e);
+                                console.warn('Enhanced buffer stall recovery failed:', e);
                             }
                         }
                         stalledRecoveryTimeout = null;
-                    }, 2000); // Wait 2s before recovery attempt
+                    }, 1500); // Faster recovery for segment transitions
                 }
             });
             
@@ -283,12 +379,32 @@ function tryHLSPlayer(videoElement) {
                             return;
                             
                         case 'bufferAppendError':
-                            console.log('Buffer append error - likely caused by track changes, will recover');
-                            // This is often non-fatal and HLS.js will recover automatically
+                            console.log('Buffer append error during transition - implementing recovery');
+                            // Enhanced recovery for segment transition append errors
+                            try {
+                                hls.trigger(Hls.Events.BUFFER_FLUSHING, {
+                                    startOffset: 0,
+                                    endOffset: Number.POSITIVE_INFINITY,
+                                    type: null // Flush both audio and video
+                                });
+                            } catch (e) {
+                                console.warn('Buffer flush recovery failed:', e);
+                            }
                             return;
                             
                         case 'bufferFullError':
-                            console.log('Buffer full - will manage automatically');
+                            console.log('Buffer full during transition - implementing buffer management');
+                            // Proactive buffer management during transitions
+                            try {
+                                const currentTime = videoElement.currentTime;
+                                hls.trigger(Hls.Events.BUFFER_FLUSHING, {
+                                    startOffset: 0,
+                                    endOffset: currentTime - 5, // Keep 5s behind current position
+                                    type: null
+                                });
+                            } catch (e) {
+                                console.warn('Buffer management failed:', e);
+                            }
                             return;
                             
                         case 'fragLoadError':
@@ -366,7 +482,7 @@ function tryHLSPlayer(videoElement) {
                 }
             });
             
-            // Monitor connection health periodically
+            // Monitor connection health and segment transition quality
             const connectionMonitor = setInterval(() => {
                 if (!currentPlayer || currentPlayer.type !== 'hls.js' || !currentPlayer.instance) {
                     clearInterval(connectionMonitor);
@@ -374,16 +490,45 @@ function tryHLSPlayer(videoElement) {
                 }
                 
                 const timeSinceLastBuffer = Date.now() - lastBufferUpdate;
+                const bufferLength = videoElement.buffered.length > 0 ? 
+                    videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime : 0;
                 
-                // Check for connection issues
-                if (timeSinceLastBuffer > 15000 && connectionState === 'playing') {
-                    console.warn(`Connection may be stalled (${timeSinceLastBuffer}ms since last buffer update)`);
+                // Enhanced connection health monitoring for segment transitions
+                if (timeSinceLastBuffer > 10000 && connectionState === 'playing') {
+                    console.warn(`Segment transition may be stalled (${timeSinceLastBuffer}ms since last buffer update)`);
                     connectionState = 'stalled';
-                } else if (timeSinceLastBuffer < 15000 && connectionState === 'stalled') {
-                    console.log('Connection recovered');
+                    
+                    // Proactive recovery for segment transition issues
+                    if (bufferLength < 3) {
+                        console.log('Low buffer during stall, triggering transition recovery');
+                        try {
+                            hls.trigger(Hls.Events.BUFFER_RESET);
+                            hls.startLoad(videoElement.currentTime);
+                        } catch (e) {
+                            console.warn('Transition recovery failed:', e);
+                        }
+                    }
+                } else if (timeSinceLastBuffer < 10000 && connectionState === 'stalled') {
+                    console.log('Segment transition recovered');
                     connectionState = 'playing';
                 }
-            }, 5000);
+                
+                // Monitor for segment transition artifacting (rapid buffer changes)
+                if (bufferLength > 25) {
+                    console.log('Large buffer detected, optimizing for segment transitions');
+                    try {
+                        // Trim excessive buffer to prevent transition issues
+                        const currentTime = videoElement.currentTime;
+                        hls.trigger(Hls.Events.BUFFER_FLUSHING, {
+                            startOffset: currentTime + 15,
+                            endOffset: Number.POSITIVE_INFINITY,
+                            type: null
+                        });
+                    } catch (e) {
+                        console.warn('Buffer optimization failed:', e);
+                    }
+                }
+            }, 3000); // More frequent monitoring for segment transitions
             
             currentPlayer = { 
                 type: 'hls.js', 
@@ -393,7 +538,11 @@ function tryHLSPlayer(videoElement) {
                 getStats: () => ({
                     segmentCount: segmentCount,
                     retryCount: retryCount,
-                    timeSinceLastBuffer: Date.now() - lastBufferUpdate
+                    timeSinceLastBuffer: Date.now() - lastBufferUpdate,
+                    lastSegmentBoundary: lastSegmentBoundary,
+                    transitionMonitoring: transitionMonitoringEnabled,
+                    bufferLength: videoElement.buffered.length > 0 ? 
+                        Math.round(videoElement.buffered.end(videoElement.buffered.length - 1) - videoElement.currentTime) : 0
                 })
             };
             return true;
