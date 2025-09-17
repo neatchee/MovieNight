@@ -221,7 +221,7 @@ function tryHLSPlayer(videoElement) {
                 // Implement progressive recovery strategy
                 if (!stalledRecoveryTimeout) {
                     stalledRecoveryTimeout = setTimeout(() => {
-                        if (connectionState === 'playing') {
+                        if (connectionState === 'playing' && currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
                             console.log('Attempting buffer stall recovery...');
                             try {
                                 hls.trigger(Hls.Events.BUFFER_RESET);
@@ -268,6 +268,10 @@ function tryHLSPlayer(videoElement) {
                         console.log('Buffer appending error - will retry');
                         return;
                     }
+                    if (data.details === 'bufferAppendError') {
+                        console.log('Buffer append error - likely track removed, ignoring');
+                        return;
+                    }
                     
                     // Log other non-fatal errors with context
                     console.log(`Non-fatal HLS error: ${data.details} (connection: ${connectionState}, buffer age: ${timeSinceLastBuffer}ms)`);
@@ -285,8 +289,11 @@ function tryHLSPlayer(videoElement) {
                             // Progressive retry with exponential backoff
                             setTimeout(() => {
                                 try {
-                                    hls.startLoad();
-                                    connectionState = 'recovering';
+                                    // Check if HLS instance is still valid before recovery
+                                    if (currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
+                                        hls.startLoad();
+                                        connectionState = 'recovering';
+                                    }
                                 } catch (e) {
                                     console.error('Network recovery failed:', e);
                                 }
@@ -302,8 +309,15 @@ function tryHLSPlayer(videoElement) {
                         console.log(`Fatal media error (attempt ${retryCount}), attempting recovery...`);
                         if (retryCount <= 2) {
                             try {
-                                hls.recoverMediaError();
-                                connectionState = 'recovering';
+                                // Check if HLS instance is still valid before recovery
+                                if (currentPlayer && currentPlayer.instance && currentPlayer.type === 'hls.js') {
+                                    hls.recoverMediaError();
+                                    connectionState = 'recovering';
+                                } else {
+                                    console.log('HLS instance no longer valid, falling back');
+                                    destroyCurrentPlayer();
+                                    tryMpegTSPlayer(videoElement);
+                                }
                             } catch (e) {
                                 console.error('Media recovery failed:', e);
                                 destroyCurrentPlayer();
@@ -326,7 +340,7 @@ function tryHLSPlayer(videoElement) {
             
             // Monitor connection health periodically
             const connectionMonitor = setInterval(() => {
-                if (!currentPlayer || currentPlayer.type !== 'hls.js') {
+                if (!currentPlayer || currentPlayer.type !== 'hls.js' || !currentPlayer.instance) {
                     clearInterval(connectionMonitor);
                     return;
                 }
@@ -410,6 +424,10 @@ function destroyCurrentPlayer() {
             }
             
             if (currentPlayer.type === 'hls.js') {
+                // Proper HLS.js cleanup sequence to prevent bufferAppendError
+                // First detach media to stop buffer operations
+                currentPlayer.instance.detachMedia();
+                // Then destroy the instance
                 currentPlayer.instance.destroy();
                 console.log('HLS player destroyed and cleaned up');
             } else if (currentPlayer.type === 'mpegts') {
