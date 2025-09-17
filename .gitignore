@@ -27,6 +27,7 @@ debug
 
 # MovieNight binary
 MovieNight*
+movienight
 
 # Twitch channel info
 static/subscriber.json

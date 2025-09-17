@@ -470,6 +470,43 @@ func handleDefault(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HLS playlist handler
+func handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
+	streamPath := strings.TrimSuffix(strings.Trim(r.URL.Path, "/"), ".m3u8")
+	
+	l.RLock()
+	ch := channels[streamPath]
+	l.RUnlock()
+	
+	if ch == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	// Create a simple HLS playlist with a single ongoing segment
+	// This is a basic implementation that references the live stream
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	
+	playlist := `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:10.0,
+/live
+#EXT-X-ENDLIST`
+	
+	w.Write([]byte(playlist))
+}
+
+// HLS segment handler (simplified - redirects to live stream)
+func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
+	// For now, redirect segment requests to the main live stream
+	// In a full implementation, this would serve actual TS segments
+	http.Redirect(w, r, "/live", http.StatusFound)
+}
+
 func wrapAuth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if settings.RoomAccess != AccessOpen {
