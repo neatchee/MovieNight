@@ -10,6 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"context"
+	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/zorchenhimer/MovieNight/common"
 
@@ -18,6 +22,8 @@ import (
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format/flv"
 	"github.com/nareix/joy4/format/rtmp"
+	"github.com/nareix/joy4/format/ts"
+	"github.com/grafov/m3u8"
 )
 
 var (
@@ -33,14 +39,64 @@ var (
 
 type Channel struct {
 	que *pubsub.Queue
+	hlsData *HLSData
 }
+
+// HLS-related data structures
+type HLSData struct {
+	sync.RWMutex
+	mediaSequence uint64
+	segments      []HLSSegment
+	lastSegmentTime time.Time
+}
+
+type HLSSegment struct {
+	Index       uint64
+	URL         string
+	Duration    float64
+	StartTime   time.Time
+}
+
+// HLS configuration constants
+const (
+	HLSSegmentDuration = 6.0  // seconds per segment
+	HLSWindowSize      = 5    // number of segments to keep in playlist
+	HLSTargetDuration  = 10   // target duration for HLS spec
+)
 
 type writeFlusher struct {
 	httpflusher http.Flusher
 	io.Writer
 }
 
+// Write with comprehensive nil protection to prevent segfaults
+func (w writeFlusher) Write(p []byte) (n int, err error) {
+	if w.Writer == nil {
+		return 0, errors.New("writer is nil")
+	}
+	
+	defer func() {
+		if r := recover(); r != nil {
+			common.LogErrorf("Recovered from writer panic: %v\n", r)
+			err = errors.New("writer panic recovered")
+		}
+	}()
+	
+	return w.Writer.Write(p)
+}
+
+// Flush with comprehensive nil protection to prevent segfaults
 func (w writeFlusher) Flush() error {
+	if w.httpflusher == nil {
+		return errors.New("flusher is nil")
+	}
+	
+	defer func() {
+		if r := recover(); r != nil {
+			common.LogErrorf("Recovered from flusher panic: %v\n", r)
+		}
+	}()
+	
 	w.httpflusher.Flush()
 	return nil
 }
@@ -392,6 +448,12 @@ func handlePublish(conn *rtmp.Conn) {
 
 	ch := &Channel{}
 	ch.que = pubsub.NewQueue()
+	// Initialize HLS data
+	ch.hlsData = &HLSData{
+		mediaSequence: 0,
+		segments:      make([]HLSSegment, 0),
+		lastSegmentTime: time.Now(),
+	}
 	err := ch.que.WriteHeader(streams)
 	if err != nil {
 		common.LogErrorf("Could not write header to streams: %v\n", err)
@@ -457,6 +519,228 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		// Maybe HTTP_204 is better than HTTP_404
 		w.WriteHeader(http.StatusNoContent)
 		stats.resetViewers()
+	}
+}
+
+func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
+	l.RLock()
+	ch := channels["live"]
+	l.RUnlock()
+	
+	// Comprehensive validation with nil checks to prevent segfaults
+	if ch == nil {
+		common.LogInfoln("HLS manifest request for non-existent channel")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	if ch.que == nil {
+		common.LogInfoln("HLS manifest request for channel with nil queue")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	// Initialize HLS data if needed
+	if ch.hlsData == nil {
+		ch.hlsData = &HLSData{
+			mediaSequence: 0,
+			segments:      make([]HLSSegment, 0),
+			lastSegmentTime: time.Now(),
+		}
+	}
+	
+	ch.hlsData.Lock()
+	defer ch.hlsData.Unlock()
+	
+	// Update HLS segments based on timing
+	updateHLSSegments(ch.hlsData)
+	
+	// Generate M3U8 playlist using grafov/m3u8 library
+	playlist, _ := m3u8.NewMediaPlaylist(HLSWindowSize, HLSWindowSize)
+	if playlist == nil {
+		common.LogErrorln("Failed to create media playlist")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	
+	// Set playlist properties
+	playlist.TargetDuration = HLSTargetDuration
+	playlist.SeqNo = ch.hlsData.mediaSequence
+	
+	// Add segments to playlist
+	for _, segment := range ch.hlsData.segments {
+		err := playlist.Append(segment.URL, segment.Duration, "")
+		if err != nil {
+			common.LogErrorf("Error adding segment to playlist: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+	
+	// Set response headers
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(http.StatusOK)
+	
+	// Write playlist
+	_, err := w.Write(playlist.Encode().Bytes())
+	if err != nil {
+		common.LogErrorf("Error writing HLS manifest: %v\n", err)
+	}
+	
+	common.LogInfof("Generated HLS playlist for live: %d segments, seq: %d\n", 
+		len(ch.hlsData.segments), ch.hlsData.mediaSequence)
+}
+
+func updateHLSSegments(hlsData *HLSData) {
+	now := time.Now()
+	
+	// Check if it's time for a new segment
+	if now.Sub(hlsData.lastSegmentTime).Seconds() >= HLSSegmentDuration {
+		// Add new segment
+		newSegment := HLSSegment{
+			Index:     hlsData.mediaSequence + uint64(len(hlsData.segments)),
+			URL:       fmt.Sprintf("/live_segment_%d.ts", hlsData.mediaSequence + uint64(len(hlsData.segments))),
+			Duration:  HLSSegmentDuration,
+			StartTime: now,
+		}
+		
+		hlsData.segments = append(hlsData.segments, newSegment)
+		hlsData.lastSegmentTime = now
+		
+		// Maintain sliding window
+		if len(hlsData.segments) > HLSWindowSize {
+			// Remove oldest segment and increment media sequence
+			hlsData.segments = hlsData.segments[1:]
+			hlsData.mediaSequence++
+		}
+		
+		common.LogInfof("HLS: Added segment %d, current seq: %d, window: %v\n", 
+			newSegment.Index, hlsData.mediaSequence, getSegmentIndexes(hlsData.segments))
+	}
+}
+
+func getSegmentIndexes(segments []HLSSegment) []uint64 {
+	indexes := make([]uint64, len(segments))
+	for i, seg := range segments {
+		indexes[i] = seg.Index
+	}
+	return indexes
+}
+
+func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
+	// Extract segment number from URL
+	path := strings.TrimPrefix(r.URL.Path, "/live_segment_")
+	path = strings.TrimSuffix(path, ".ts")
+	
+	segmentNum, err := strconv.ParseUint(path, 10, 64)
+	if err != nil {
+		common.LogErrorf("Invalid segment number: %s\n", path)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	
+	l.RLock()
+	ch := channels["live"]
+	l.RUnlock()
+	
+	// Comprehensive validation with nil checks to prevent segfaults
+	if ch == nil {
+		common.LogInfoln("HLS segment request for non-existent channel")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	if ch.que == nil {
+		common.LogInfoln("HLS segment request for channel with nil queue")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	if ch.hlsData == nil {
+		common.LogInfoln("HLS segment request for channel with nil HLS data")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	ch.hlsData.RLock()
+	// Validate segment is in current window
+	validSegment := false
+	for _, seg := range ch.hlsData.segments {
+		if seg.Index == segmentNum {
+			validSegment = true
+			break
+		}
+	}
+	ch.hlsData.RUnlock()
+	
+	if !validSegment {
+		common.LogInfof("Requested segment %d not in current window\n", segmentNum)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	
+	// Set headers before any operations that might fail
+	w.Header().Set("Content-Type", "video/mp2t")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "max-age=10")
+	w.WriteHeader(http.StatusOK)
+	
+	// Get HTTP flusher - this needs to be checked for nil to prevent segfaults
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		common.LogErrorln("ResponseWriter does not support flushing")
+		return
+	}
+	
+	// Create write flusher with comprehensive nil protection
+	wf := createProtectedWriteFlusher(w, flusher)
+	
+	// Use TS muxer instead of FLV to fix fragParsingError
+	tsMuxer := ts.NewMuxer(wf)
+	if tsMuxer == nil {
+		common.LogErrorln("Failed to create TS muxer")
+		return
+	}
+	
+	// Get cursor with nil protection
+	cursor := ch.que.Latest()
+	if cursor == nil {
+		common.LogErrorln("Failed to get latest cursor from queue")
+		return
+	}
+	
+	// Create context with timeout to prevent infinite streaming
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(HLSSegmentDuration + 2) * time.Second)
+	defer cancel()
+	
+	// Copy video data with time-bounded streaming
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				common.LogErrorf("Recovered from panic in HLS segment handler: %v\n", r)
+			}
+		}()
+		
+		err := avutil.CopyFile(tsMuxer, cursor)
+		if err != nil {
+			common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
+		}
+	}()
+	
+	// Wait for either completion or timeout
+	select {
+	case <-ctx.Done():
+		common.LogInfof("HLS segment %d completed/timed out\n", segmentNum)
+	}
+}
+
+// createProtectedWriteFlusher creates a write flusher with comprehensive nil protection
+func createProtectedWriteFlusher(w http.ResponseWriter, flusher http.Flusher) writeFlusher {
+	return writeFlusher{
+		httpflusher: flusher,
+		Writer:      w,
 	}
 }
 
