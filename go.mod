@@ -1,12 +1,14 @@
 module github.com/zorchenhimer/MovieNight
 
-go 1.18
+go 1.21
+
+toolchain go1.24.7
 
 require (
+	github.com/Eyevinn/hls-m3u8 v0.6.0
 	github.com/alexflint/go-arg v1.4.3
 	github.com/gorilla/sessions v1.2.1
 	github.com/gorilla/websocket v1.5.0
-	github.com/grafov/m3u8 v0.12.1
 	github.com/nareix/joy4 v0.0.0-20200507095837-05a4ffbb5369
 	github.com/playwright-community/playwright-go v0.2000.1
 	github.com/stretchr/testify v1.7.1

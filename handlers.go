@@ -23,7 +23,7 @@ import (
 	"github.com/nareix/joy4/format/flv"
 	"github.com/nareix/joy4/format/rtmp"
 	"github.com/nareix/joy4/format/ts"
-	"github.com/grafov/m3u8"
+	"github.com/Eyevinn/hls-m3u8/m3u8"
 )
 
 var (
@@ -555,7 +555,7 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 	// Update HLS segments based on timing
 	updateHLSSegments(ch.hlsData)
 	
-	// Generate M3U8 playlist using grafov/m3u8 library
+	// Generate M3U8 playlist using Eyevinn/hls-m3u8 library
 	playlist, _ := m3u8.NewMediaPlaylist(HLSWindowSize, HLSWindowSize)
 	if playlist == nil {
 		common.LogErrorln("Failed to create media playlist")
