@@ -137,9 +137,9 @@ func TestHLSRoutePattern(t *testing.T) {
 	}{
 		{"/live_segment_0.ts", true},
 		{"/live_segment_123.ts", true},
-		{"/live_segment_.ts", false}, // empty segment number
+		{"/live_segment_.ts", false},    // empty segment number
 		{"/live_segment_abc.ts", false}, // non-numeric
-		{"/live_segment_0", false}, // missing .ts extension
+		{"/live_segment_0", false},      // missing .ts extension
 		{"/other_path", false},
 	}
 
