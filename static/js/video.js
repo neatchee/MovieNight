@@ -14,24 +14,53 @@ function initPlayer() {
         console.log('Video unmuted via overlay click');
     };
     
-    // Try HLS first (for iOS compatibility)
-    if (tryHLSPlayer(videoElement)) {
-        console.log('Using HLS player');
-        return;
-    }
-    
-    // Fallback to MPEG-TS
-    if (tryMpegTSPlayer(videoElement)) {
-        console.log('Using MPEG-TS player');
-        return;
+    // Intelligent player selection based on browser capabilities and platform
+    if (isIOSOrSafari()) {
+        // On iOS/Safari, MPEG-TS often doesn't work well, so prefer HLS
+        if (tryHLSPlayer(videoElement)) {
+            console.log('Using HLS player (iOS/Safari preferred)');
+            return;
+        }
+        // Fallback to MPEG-TS if HLS fails
+        if (tryMpegTSPlayer(videoElement)) {
+            console.log('Using MPEG-TS player (fallback on iOS/Safari)');
+            return;
+        }
+    } else {
+        // On other browsers, prefer MPEG-TS first as it's more reliable
+        if (tryMpegTSPlayer(videoElement)) {
+            console.log('Using MPEG-TS player (preferred on desktop)');
+            return;
+        }
+        // Fallback to HLS if MPEG-TS fails
+        if (tryHLSPlayer(videoElement)) {
+            console.log('Using HLS player (fallback on desktop)');
+            return;
+        }
     }
     
     console.warn('No supported video player available');
 }
 
+function isIOSOrSafari() {
+    const userAgent = navigator.userAgent;
+    
+    // Check for iOS devices
+    const isIOS = /iPad|iPhone|iPod/.test(userAgent);
+    
+    // Check for Safari (but not Chrome or other WebKit browsers)
+    const isSafari = /^((?!chrome|android).)*safari/i.test(userAgent);
+    
+    // Check for macOS Safari specifically
+    const isMacSafari = isSafari && /Macintosh/.test(userAgent);
+    
+    return isIOS || isMacSafari;
+}
+
 function tryHLSPlayer(videoElement) {
     // Check for native HLS support (iOS Safari)
     if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+        console.log('Using native HLS support');
         videoElement.src = '/live.m3u8';
         videoElement.load();
         videoElement.play().catch(e => console.warn('HLS native play failed:', e));
@@ -39,8 +68,9 @@ function tryHLSPlayer(videoElement) {
         return true;
     }
     
-    // Check for HLS.js support
+    // Check for HLS.js support (only if HLS.js is loaded and supported)
     if (window.Hls && Hls.isSupported()) {
+        console.log('Using HLS.js library');
         const hls = new Hls({
             enableWorker: false,
             lowLatencyMode: true,
@@ -106,6 +136,7 @@ function tryHLSPlayer(videoElement) {
         return true;
     }
     
+    console.log('HLS not supported or available');
     return false;
 }
 
