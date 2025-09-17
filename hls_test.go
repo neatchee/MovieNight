@@ -173,16 +173,14 @@ func TestHLSRoutePattern(t *testing.T) {
 	}
 }
 
-// Tests for async segment fetching improvements
-
-func TestAsyncSegmentFetching(t *testing.T) {
-	// Test that multiple segment requests can be handled concurrently
-	// This simulates the async pre-fetching behavior
+func TestHLSSegmentConcurrency(t *testing.T) {
+	// Test that the HLS server can handle concurrent segment requests properly
+	// This tests the server-side concurrent handling capability
 	var requestMutex sync.Mutex
 	segmentRequests := make(map[string]int)
 	
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Track segment requests for async behavior verification with thread safety
+		// Track segment requests for concurrency verification with thread safety
 		requestMutex.Lock()
 		segmentRequests[r.URL.Path]++
 		requestMutex.Unlock()
@@ -202,7 +200,7 @@ func TestAsyncSegmentFetching(t *testing.T) {
 	concurrentRequests := 3
 	responses := make(chan *http.Response, concurrentRequests)
 	
-	// Make concurrent requests to simulate async pre-fetching
+	// Make concurrent requests to test server handling
 	for i := 0; i < concurrentRequests; i++ {
 		go func(segmentIndex int) {
 			url := fmt.Sprintf("%s/live_segment_%d.ts", server.URL, segmentIndex)
@@ -239,9 +237,9 @@ func TestAsyncSegmentFetching(t *testing.T) {
 	requestMutex.Unlock()
 }
 
-func TestSegmentBufferMemoryManagement(t *testing.T) {
-	// Test that segment buffer doesn't grow indefinitely
-	// This is important for the memory management requirement
+func TestHLSBufferManagement(t *testing.T) {
+	// Test that HLS segment sliding window doesn't grow indefinitely
+	// This is important for preventing memory leaks on the server side
 	
 	// Create mock HLS data with many segments
 	hlsData := &HLSData{
@@ -276,7 +274,7 @@ func TestSegmentBufferMemoryManagement(t *testing.T) {
 	}
 }
 
-func TestSegmentTimingOptimization(t *testing.T) {
+func TestHLSTimingOptimization(t *testing.T) {
 	// Test that segment timing supports smooth transitions
 	hlsData := &HLSData{
 		mediaSequence:   0,
@@ -300,21 +298,21 @@ func TestSegmentTimingOptimization(t *testing.T) {
 	assert.True(t, segment.StartTime.After(beforeUpdate) || segment.StartTime.Equal(beforeUpdate))
 	assert.True(t, segment.StartTime.Before(afterUpdate) || segment.StartTime.Equal(afterUpdate))
 	
-	// Verify segment URL format for async fetching
+	// Verify segment URL format for HLS compatibility
 	expectedURL := fmt.Sprintf("/live_segment_%d.ts", segment.Index)
 	assert.Equal(t, expectedURL, segment.URL)
 }
 
-func TestThreadSafetyForAsyncOperations(t *testing.T) {
+func TestHLSConcurrentAccess(t *testing.T) {
 	// Test that HLS data structures can handle concurrent access
-	// This is important for async pre-fetching operations
+	// This is important for live streaming with multiple clients
 	hlsData := &HLSData{
 		mediaSequence:   0,
 		segments:        make([]HLSSegment, 0),
 		lastSegmentTime: time.Now().Add(-7 * time.Second),
 	}
 	
-	// Simulate concurrent operations (like async pre-fetching and playback)
+	// Simulate concurrent operations (like multiple client requests and segment updates)
 	done := make(chan bool, 2)
 	
 	// Simulate segment updates (like during live streaming)
@@ -329,7 +327,7 @@ func TestThreadSafetyForAsyncOperations(t *testing.T) {
 		done <- true
 	}()
 	
-	// Simulate concurrent reads (like during async pre-fetching)
+	// Simulate concurrent reads (like multiple client requests)
 	go func() {
 		for i := 0; i < 10; i++ {
 			hlsData.RLock()
