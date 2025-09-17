@@ -84,19 +84,46 @@ function tryHLSPlayer(videoElement) {
         if (window.Hls && Hls.isSupported()) {
             const hls = new Hls({
                 enableWorker: false,
-                lowLatencyMode: true,
-                backBufferLength: 90,
-                maxBufferLength: 30,
-                maxMaxBufferLength: 120,
+                lowLatencyMode: false,  // Disable low latency for better buffering
+                backBufferLength: 60,   // Reduce back buffer to save memory
+                maxBufferLength: 40,    // Increase max buffer for smoother playback (adjusted for 4s segments)
+                maxMaxBufferLength: 80, // Increase maximum buffer size (adjusted for 4s segments)
+                maxBufferSize: 40 * 1000 * 1000, // 40MB buffer size
+                maxBufferHole: 0.1,     // Allow small buffer holes
+                liveSyncDurationCount: 4, // Number of segments for live sync (adjusted for 4s segments)
+                liveMaxLatencyDurationCount: 8, // Maximum latency segments (adjusted for 4s segments)
+                manifestLoadingTimeOut: 10000, // 10 second manifest timeout
+                manifestLoadingMaxRetry: 6, // Retry manifest loading
+                manifestLoadingRetryDelay: 500, // Delay between retries
+                fragLoadingTimeOut: 15000, // 15 second fragment timeout (reduced for 4s segments)
+                fragLoadingMaxRetry: 6, // Retry fragment loading
+                fragLoadingRetryDelay: 1000, // Delay between retries
+                startLevel: -1, // Auto select start level
+                abrEwmaFastLive: 3, // Fast switching for live streams
+                abrEwmaSlowLive: 9, // Slow switching for live streams
                 debug: false
             });
             
             hls.loadSource('/live.m3u8');
             hls.attachMedia(videoElement);
             
+            // Wait for first segment to be loaded before attempting to play
+            let firstSegmentLoaded = false;
+            
             hls.on(Hls.Events.MANIFEST_LOADED, () => {
                 console.log('HLS manifest loaded successfully');
-                videoElement.play().catch(e => console.warn('HLS play failed:', e));
+                // Don't auto-play yet, wait for first fragment
+            });
+            
+            hls.on(Hls.Events.FRAG_LOADED, () => {
+                if (!firstSegmentLoaded) {
+                    firstSegmentLoaded = true;
+                    console.log('HLS first segment loaded, starting playback');
+                    // Wait a bit more to ensure buffer has some data
+                    setTimeout(() => {
+                        videoElement.play().catch(e => console.warn('HLS play failed:', e));
+                    }, 1000);
+                }
             });
             
             hls.on(Hls.Events.MEDIA_ATTACHED, () => {
@@ -107,29 +134,54 @@ function tryHLSPlayer(videoElement) {
                 console.log('HLS media detached');
             });
             
+            // Add buffer monitoring for better performance
+            hls.on(Hls.Events.BUFFER_CREATED, () => {
+                console.log('HLS buffer created');
+            });
+            
+            hls.on(Hls.Events.BUFFER_APPENDED, () => {
+                // Buffer is growing, good for performance
+            });
+            
+            hls.on(Hls.Events.BUFFER_EOS, () => {
+                console.log('HLS end of stream reached');
+            });
+            
             // Comprehensive error handling following HLS.js documentation
             hls.on(Hls.Events.ERROR, (event, data) => {
-                console.warn('HLS error:', data);
-                
-                if (data.fatal) {
-                    switch (data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            console.log('Fatal network error, attempting to recover...');
-                            hls.startLoad();
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log('Fatal media error, attempting to recover...');
-                            hls.recoverMediaError();
-                            break;
-                        default:
-                            console.log('Fatal error, cannot recover - falling back to MPEG-TS');
-                            destroyCurrentPlayer();
-                            tryMpegTSPlayer(videoElement);
-                            break;
+                // Handle specific non-fatal errors more gracefully
+                if (!data.fatal) {
+                    // Common initial buffering issues that can be ignored
+                    if (data.details === 'bufferStalledError' && !firstSegmentLoaded) {
+                        console.log('Initial buffer stall, waiting for first segment...');
+                        return; // Don't log this as an error
                     }
-                } else {
-                    // Non-fatal errors - log for debugging
+                    if (data.details === 'bufferNudgedOnStall') {
+                        console.log('Buffer nudged on stall - normal behavior');
+                        return; // Don't log this as an error
+                    }
+                    // Log other non-fatal errors for debugging
                     console.log('Non-fatal HLS error:', data.details);
+                    return;
+                }
+                
+                // Handle fatal errors
+                console.warn('Fatal HLS error:', data);
+                
+                switch (data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                        console.log('Fatal network error, attempting to recover...');
+                        hls.startLoad();
+                        break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                        console.log('Fatal media error, attempting to recover...');
+                        hls.recoverMediaError();
+                        break;
+                    default:
+                        console.log('Fatal error, cannot recover - falling back to MPEG-TS');
+                        destroyCurrentPlayer();
+                        tryMpegTSPlayer(videoElement);
+                        break;
                 }
             });
             

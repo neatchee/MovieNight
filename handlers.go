@@ -59,9 +59,9 @@ type HLSSegment struct {
 
 // HLS configuration constants
 const (
-	HLSSegmentDuration = 6.0  // seconds per segment
-	HLSWindowSize      = 5    // number of segments to keep in playlist
-	HLSTargetDuration  = 10   // target duration for HLS spec
+	HLSSegmentDuration = 4.0  // seconds per segment (reduced for better performance)
+	HLSWindowSize      = 6    // number of segments to keep in playlist (increased for better buffering)
+	HLSTargetDuration  = 8    // target duration for HLS spec (reduced for faster startup)
 )
 
 type writeFlusher struct {
@@ -602,8 +602,10 @@ func handleHLSManifest(w http.ResponseWriter, r *http.Request) {
 		common.LogErrorf("Error writing HLS manifest: %v\n", err)
 	}
 	
-	common.LogInfof("Generated HLS playlist for live: %d segments, seq: %d\n", 
-		len(ch.hlsData.segments), ch.hlsData.mediaSequence)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogInfof("Generated HLS playlist for live: %d segments, seq: %d\n", 
+			len(ch.hlsData.segments), ch.hlsData.mediaSequence)
+	}
 }
 
 func updateHLSSegments(hlsData *HLSData) {
@@ -629,8 +631,10 @@ func updateHLSSegments(hlsData *HLSData) {
 			hlsData.mediaSequence++
 		}
 		
-		common.LogInfof("HLS: Added segment %d, current seq: %d, window: %v\n", 
-			newSegment.Index, hlsData.mediaSequence, getSegmentIndexes(hlsData.segments))
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS: Added segment %d, current seq: %d, window: %v\n", 
+				newSegment.Index, hlsData.mediaSequence, getSegmentIndexes(hlsData.segments))
+		}
 	}
 }
 
@@ -767,12 +771,18 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 				common.LogErrorf("Could not copy video to HLS segment: %v\n", err)
 			}
 		}
-		common.LogInfof("HLS segment %d completed\n", segmentNum)
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogInfof("HLS segment %d completed\n", segmentNum)
+		}
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			common.LogInfof("HLS segment %d timed out\n", segmentNum)
+			if settings != nil && settings.HLSDebugLogging {
+				common.LogInfof("HLS segment %d timed out\n", segmentNum)
+			}
 		} else {
-			common.LogInfof("HLS segment %d cancelled (client disconnected)\n", segmentNum)
+			if settings != nil && settings.HLSDebugLogging {
+				common.LogInfof("HLS segment %d cancelled (client disconnected)\n", segmentNum)
+			}
 		}
 	}
 }
