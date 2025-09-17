@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"time"
 
 	"github.com/alexflint/go-arg"
@@ -156,14 +155,8 @@ func run(args args) {
 
 	router.HandleFunc("/live", wrapAuth(handleLive))
 	router.HandleFunc("/live.m3u8", wrapAuth(handleHLSPlaylist))
-	router.HandleFunc("/", wrapAuth(func(w http.ResponseWriter, r *http.Request) {
-		// Check if this is an HLS segment request
-		if strings.HasPrefix(r.URL.Path, "/live_segment_") && strings.HasSuffix(r.URL.Path, ".ts") {
-			handleHLSSegment(w, r)
-			return
-		}
-		handleDefault(w, r)
-	}))
+	router.HandleFunc("/live.ts", wrapAuth(handleHLSStream))
+	router.HandleFunc("/", wrapAuth(handleDefault))
 
 	httpServer := &http.Server{
 		Addr:    args.Addr,

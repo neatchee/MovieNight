@@ -1,5 +1,3 @@
-github.com/Eyevinn/hls-m3u8 v0.6.0 h1:i4eyofj5zStgUPcy+UwUQ4oOgcLJVGbrw4XOcxVMVw8=
-github.com/Eyevinn/hls-m3u8 v0.6.0/go.mod h1:9jzVfwCo1+TC6yz+TKDBt9gIshzI9fhVE7M5AhcOSnQ=
 github.com/alexflint/go-arg v1.4.3 h1:9rwwEBpMXfKQKceuZfYcwuc/7YY7tWJbFsgG5cAU/uo=
 github.com/alexflint/go-arg v1.4.3/go.mod h1:3PZ/wp/8HuqRZMUUgu7I+e1qcpUbvmS258mRXkFH4IA=
 github.com/alexflint/go-scalar v1.1.0/go.mod h1:LoFvNMqS1CPrMVltza4LvnGKhaSpc3oyLEBUZVhhS2o=
