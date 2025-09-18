@@ -286,6 +286,7 @@ func TestIsHLSPlaylistRequest(t *testing.T) {
 		{"M3U8 extension uppercase", "/live/PLAYLIST.M3U8", "", true},
 		{"playlist in path", "/live/playlist", "", true},
 		{"Accept header", "/live", "application/vnd.apple.mpegurl", true},
+		{"format=hls parameter", "/live?format=hls", "", true},
 		{"regular path", "/live", "", false},
 		{"ts segment", "/live/segment_0.ts", "", false},
 	}

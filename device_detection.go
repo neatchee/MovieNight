@@ -17,12 +17,15 @@ type DeviceCapabilities struct {
 	PreferredCodec string
 }
 
-// iOS user agent patterns for detection
+// iOS user agent patterns for detection - prioritizing User Agent string
 var iosPatterns = []*regexp.Regexp{
+	// Primary iOS device patterns (prioritized)
 	regexp.MustCompile(`(?i)iphone`),
 	regexp.MustCompile(`(?i)ipad`),
 	regexp.MustCompile(`(?i)ipod`),
-	regexp.MustCompile(`(?i)mac os.*safari`), // macOS Safari also supports HLS natively
+	// macOS Safari patterns
+	regexp.MustCompile(`(?i)macintosh.*safari.*version`), // macOS Safari also supports HLS natively
+	regexp.MustCompile(`(?i)mac os x.*safari.*version`),
 }
 
 // Android user agent patterns
@@ -43,6 +46,7 @@ var mobilePatterns = []*regexp.Regexp{
 }
 
 // DetectDeviceCapabilities analyzes the HTTP request to determine device capabilities
+// Prioritizes User Agent string detection as requested
 func DetectDeviceCapabilities(r *http.Request) DeviceCapabilities {
 	if r == nil {
 		return DeviceCapabilities{
@@ -62,7 +66,8 @@ func DetectDeviceCapabilities(r *http.Request) DeviceCapabilities {
 		UserAgent: userAgent,
 	}
 
-	// Detect iOS devices
+	// Primary detection via User Agent string (prioritized as requested)
+	// Detect iOS devices first
 	for _, pattern := range iosPatterns {
 		if pattern.MatchString(userAgent) {
 			capabilities.IsIOS = true
@@ -71,10 +76,12 @@ func DetectDeviceCapabilities(r *http.Request) DeviceCapabilities {
 	}
 
 	// Detect Android devices
-	for _, pattern := range androidPatterns {
-		if pattern.MatchString(userAgent) {
-			capabilities.IsAndroid = true
-			break
+	if !capabilities.IsIOS { // Only check if not already detected as iOS
+		for _, pattern := range androidPatterns {
+			if pattern.MatchString(userAgent) {
+				capabilities.IsAndroid = true
+				break
+			}
 		}
 	}
 
@@ -156,9 +163,28 @@ func IsHLSPlaylistRequest(r *http.Request) bool {
 	}
 
 	path := strings.ToLower(r.URL.Path)
-	return strings.HasSuffix(path, ".m3u8") || 
-		   strings.Contains(path, "playlist") ||
-		   r.Header.Get("Accept") == "application/vnd.apple.mpegurl"
+	
+	// Check if it's explicitly an m3u8 file
+	if strings.HasSuffix(path, ".m3u8") {
+		return true
+	}
+	
+	// Check if it contains playlist in the path
+	if strings.Contains(path, "playlist") {
+		return true
+	}
+	
+	// Check Accept header for HLS content type
+	if r.Header.Get("Accept") == "application/vnd.apple.mpegurl" {
+		return true
+	}
+	
+	// Check if format=hls parameter is present (for /live?format=hls)
+	if r.URL.Query().Get("format") == "hls" {
+		return true
+	}
+	
+	return false
 }
 
 // IsHLSSegmentRequest checks if the request is for an HLS segment

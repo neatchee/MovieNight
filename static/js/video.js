@@ -1,28 +1,69 @@
 /// <reference path='./both.js' />
 
-// Device detection utilities
+// Device detection utilities - prioritizing User Agent string
 function isIOS() {
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-}
-
-function isMobile() {
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-}
-
-function supportsHLS() {
-    var video = document.createElement('video');
-    return video.canPlayType('application/vnd.apple.mpegurl') !== '';
-}
-
-function shouldUseHLS() {
-    // Force HLS for iOS devices
-    if (isIOS()) {
+    const userAgent = navigator.userAgent;
+    
+    // Primary detection via User Agent string (prioritized as requested)
+    if (/iPad|iPhone|iPod/.test(userAgent) && !window.MSStream) {
         return true;
     }
     
-    // Check URL parameters
+    // Additional iOS detection patterns
+    if (/Macintosh.*Safari/.test(userAgent) && /Version\//.test(userAgent)) {
+        // macOS Safari - also supports native HLS
+        return true;
+    }
+    
+    return false;
+}
+
+function isMobile() {
+    const userAgent = navigator.userAgent;
+    
+    // Primary detection via User Agent string (prioritized as requested)
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(userAgent);
+}
+
+function isAndroid() {
+    const userAgent = navigator.userAgent;
+    
+    // Primary detection via User Agent string (prioritized as requested)
+    return /Android/i.test(userAgent);
+}
+
+function supportsHLS() {
+    // First check User Agent for known HLS support
+    const userAgent = navigator.userAgent;
+    if (/iPad|iPhone|iPod|Macintosh.*Safari/.test(userAgent)) {
+        return true; // iOS and macOS Safari have native HLS support
+    }
+    
+    // Fallback to feature detection only if User Agent doesn't give clear answer
+    try {
+        var video = document.createElement('video');
+        return video.canPlayType('application/vnd.apple.mpegurl') !== '';
+    } catch (e) {
+        return false;
+    }
+}
+
+function shouldUseHLS() {
+    // Check URL parameters first (explicit override)
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('format') === 'hls') {
+        return true;
+    }
+    
+    // Force HLS for iOS devices (prioritizing User Agent detection)
+    if (isIOS()) {
+        console.log('iOS detected via User Agent, using HLS');
+        return true;
+    }
+    
+    // For Android devices, also prefer HLS if supported
+    if (isAndroid() && typeof Hls !== 'undefined' && Hls.isSupported()) {
+        console.log('Android detected with HLS.js support, using HLS');
         return true;
     }
     
@@ -31,7 +72,14 @@ function shouldUseHLS() {
 }
 
 function initPlayer() {
+    console.log('initPlayer: User Agent:', navigator.userAgent);
+    console.log('initPlayer: isIOS():', isIOS());
+    console.log('initPlayer: isAndroid():', isAndroid());
+    console.log('initPlayer: isMobile():', isMobile());
+    console.log('initPlayer: supportsHLS():', supportsHLS());
+    
     const useHLS = shouldUseHLS();
+    console.log('initPlayer: shouldUseHLS():', useHLS);
     
     if (useHLS) {
         initHLSPlayer();
@@ -82,6 +130,8 @@ function initHLSPlayer() {
 }
 
 function initHLSWithLibrary(videoElement, hlsSource) {
+    console.log('Initializing HLS.js with source:', hlsSource);
+    
     // Advanced hls.js configuration utilizing full feature set
     const hlsConfig = {
         // Core settings
@@ -171,7 +221,9 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     window.hlsPlayer = hls;
     
     // Load and attach media
+    console.log('Loading HLS source:', hlsSource);
     hls.loadSource(hlsSource);
+    console.log('Attaching HLS to video element');
     hls.attachMedia(videoElement);
     
     // Event listeners for comprehensive error handling and monitoring

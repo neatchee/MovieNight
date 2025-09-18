@@ -441,14 +441,22 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	ch := channels[strings.Trim(r.URL.Path, "/")]
 	l.RUnlock()
 
+	// Debug logging for HLS troubleshooting
+	userAgent := r.Header.Get("User-Agent")
+	format := r.URL.Query().Get("format")
+	common.LogDebugf("handleLive: path=%s, format=%s, userAgent=%s\n", r.URL.Path, format, userAgent)
+
 	if ch != nil {
 		// Detect streaming format based on device capabilities or explicit request
 		streamingFormat := GetStreamingFormat(r)
+		common.LogDebugf("Detected streaming format: %s\n", streamingFormat)
 		
 		// Also check if this is an HLS playlist request (for native iOS)
 		if streamingFormat == "hls" || strings.HasSuffix(r.URL.Path, ".m3u8") || r.URL.Query().Get("format") == "hls" {
+			common.LogDebugf("Routing to HLS handler\n")
 			handleHLSStream(w, r, ch)
 		} else {
+			common.LogDebugf("Routing to FLV handler\n")
 			handleFLVStream(w, r, ch)
 		}
 	} else {
@@ -494,13 +502,17 @@ func handleFLVStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 }
 
 func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
+	common.LogDebugf("handleHLSStream called for path: %s\n", r.URL.Path)
+	
 	if ch == nil {
+		common.LogDebugf("handleHLSStream: channel is nil\n")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	// Initialize HLS channel if not already done
 	if ch.hlsChan == nil {
+		common.LogDebugf("handleHLSStream: initializing HLS channel\n")
 		hlsChan, err := NewHLSChannelWithDeviceOptimization(ch.que, r)
 		if err != nil {
 			common.LogErrorf("Failed to create HLS channel: %v\n", err)
@@ -514,21 +526,28 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		common.LogDebugf("handleHLSStream: HLS channel initialized and started\n")
 	}
 
 	// Handle different HLS requests
 	if IsHLSPlaylistRequest(r) {
+		common.LogDebugf("handleHLSStream: routing to playlist handler\n")
 		handleHLSPlaylist(w, r, ch.hlsChan)
 	} else if IsHLSSegmentRequest(r) {
+		common.LogDebugf("handleHLSStream: routing to segment handler\n")
 		handleHLSSegment(w, r, ch.hlsChan)
 	} else {
 		// Default to playlist for HLS requests
+		common.LogDebugf("handleHLSStream: defaulting to playlist handler\n")
 		handleHLSPlaylist(w, r, ch.hlsChan)
 	}
 }
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
+	common.LogDebugf("handleHLSPlaylist called\n")
+	
 	if hlsChan == nil {
+		common.LogDebugf("handleHLSPlaylist: hlsChan is nil\n")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -540,7 +559,10 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 	w.Header().Set("Expires", "0")
 
 	playlist := hlsChan.GetPlaylist()
+	common.LogDebugf("handleHLSPlaylist: playlist length = %d\n", len(playlist))
+	
 	if playlist == "" {
+		common.LogDebugf("handleHLSPlaylist: playlist is empty\n")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -554,6 +576,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 
 	w.WriteHeader(200)
 	w.Write([]byte(playlist))
+	common.LogDebugf("handleHLSPlaylist: playlist sent successfully\n")
 }
 
 func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
