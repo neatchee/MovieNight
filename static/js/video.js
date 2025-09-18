@@ -220,11 +220,15 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     // Store reference for cleanup
     window.hlsPlayer = hls;
     
-    // Load and attach media
-    console.log('Loading HLS source:', hlsSource);
-    hls.loadSource(hlsSource);
+    // Load and attach media - proper order is important
     console.log('Attaching HLS to video element');
     hls.attachMedia(videoElement);
+    
+    // Wait for media to be attached before loading source
+    hls.on(Hls.Events.MEDIA_ATTACHED, function() {
+        console.log('Media attached, now loading source:', hlsSource);
+        hls.loadSource(hlsSource);
+    });
     
     // Event listeners for comprehensive error handling and monitoring
     
@@ -250,6 +254,28 @@ function initHLSWithLibrary(videoElement, hlsSource) {
             // Show click-to-play overlay if autoplay fails
             showPlayButton();
         });
+    });
+    
+    // Add error handling for manifest loading issues
+    hls.on(Hls.Events.ERROR, function(event, data) {
+        console.error('HLS error:', data);
+        if (data.fatal) {
+            switch(data.type) {
+                case Hls.ErrorTypes.NETWORK_ERROR:
+                    console.error('Fatal network error, trying to recover...');
+                    hls.startLoad();
+                    break;
+                case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.error('Fatal media error, trying to recover...');
+                    hls.recoverMediaError();
+                    break;
+                default:
+                    console.error('Fatal error, cannot recover');
+                    // Fallback to MPEG-TS
+                    initMPEGTSPlayer();
+                    break;
+            }
+        }
     });
     
     // Level (quality) events

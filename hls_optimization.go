@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/zorchenhimer/MovieNight/common"
 )
 
@@ -376,12 +375,8 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 	}
 
 	// Add segment to playlist using proper sliding window method
-	// The hls-m3u8 library manages its own sliding window internally
-	err := h.playlist.AppendSegment(&m3u8.MediaSegment{
-		SeqId:    segment.Sequence,
-		URI:      segment.URI,
-		Duration: segment.Duration,
-	})
+	// Use Append method which handles sliding window automatically
+	err := h.playlist.Append(segment.URI, segment.Duration, "")
 	if err != nil {
 		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
 		return

@@ -278,7 +278,7 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 		return
 	}
 
-	segmentURI := fmt.Sprintf("segment_%d.ts", h.sequenceNumber)
+	segmentURI := fmt.Sprintf("/live/segment_%d.ts", h.sequenceNumber)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
@@ -297,12 +297,8 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 	}
 
 	// Add segment to playlist using proper sliding window method
-	// The hls-m3u8 library manages its own sliding window internally
-	err = h.playlist.AppendSegment(&m3u8.MediaSegment{
-		SeqId:    h.sequenceNumber,
-		URI:      segmentURI,
-		Duration: durationSeconds,
-	})
+	// Use Append method which handles sliding window automatically
+	err = h.playlist.Append(segmentURI, durationSeconds, "")
 	if err != nil {
 		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
 		return
