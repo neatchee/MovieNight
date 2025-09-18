@@ -354,10 +354,10 @@ func (w *SegmentWorker) convertToTSOptimized(data []byte) ([]byte, error) {
 
 // generateSegmentURI generates a URI for a segment
 func generateSegmentURI(sequence uint64) string {
-	return fmt.Sprintf("segment_%d.ts", sequence)
+	return fmt.Sprintf("/live/segment_%d.ts", sequence)
 }
 
-// addGeneratedSegment adds a generated segment to the HLS channel
+// addGeneratedSegment adds a generated segment to the HLS channel with proper sliding window
 func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 	if h == nil {
 		return
@@ -371,16 +371,14 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 	
 	// Remove old segments if we exceed max (manual sliding window for our data)
 	if len(h.segments) > h.maxSegments {
-		h.segments = h.segments[1:]
+		// Remove oldest segments to maintain window size
+		excess := len(h.segments) - h.maxSegments
+		h.segments = h.segments[excess:]
 	}
 
-	// Add segment to playlist using proper sliding window method
-	// Use Append method which handles sliding window automatically
-	err := h.playlist.Append(segment.URI, segment.Duration, "")
-	if err != nil {
-		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
-		return
-	}
+	// For live playlists with sliding window, use the Slide method which is specifically
+	// designed for this purpose and automatically manages the window size
+	h.playlist.Slide(segment.URI, segment.Duration, "")
 
 	// Update target duration if needed
 	duration := time.Duration(segment.Duration * float64(time.Second))
@@ -389,5 +387,6 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.playlist.TargetDuration = uint(segment.Duration)
 	}
 
-	common.LogDebugf("Added generated HLS segment %d with duration %.2fs\n", segment.Sequence, segment.Duration)
+	common.LogDebugf("Added generated HLS segment %d with duration %.2fs (playlist count: %d/%d)\n", 
+		segment.Sequence, segment.Duration, h.playlist.Count(), h.maxSegments)
 }

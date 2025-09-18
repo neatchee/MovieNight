@@ -106,10 +106,9 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 	
 	// Create playlist with sliding window for live streaming
 	// For live playlists, winsize should be the actual window size we want to display
-	// and capacity should be at least winsize (can be larger for buffering)
+	// For proper sliding window behavior, set capacity equal to windowSize for live streaming
 	windowSize := uint(config.MaxSegments)
-	capacity := windowSize * 2  // Double capacity for smooth sliding window operation
-	playlist, err := m3u8.NewMediaPlaylist(windowSize, capacity)
+	playlist, err := m3u8.NewMediaPlaylist(windowSize, windowSize)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create playlist: %w", err)
@@ -117,7 +116,7 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 
 	// Set playlist properties for optimal HLS performance and sliding window
 	playlist.SetVersion(6) // HLS version 6 for better live streaming support
-	// For live streaming, we don't close the playlist - it stays open for continuous updates
+	playlist.Closed = false // Keep playlist open for live streaming (sliding window)
 	
 	// Apply device-specific optimizations
 	config.BitrateReduction = qualitySettings.BitrateMultiplier
@@ -140,15 +139,15 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 		config.MaxConcurrentSegments = 5
 	}
 
-	// Recreate playlist with device-optimized settings
+	// Recreate playlist with device-optimized settings for proper sliding window
 	windowSize = uint(config.MaxSegments)
-	capacity = windowSize * 2
-	playlist, err = m3u8.NewMediaPlaylist(windowSize, capacity)
+	playlist, err = m3u8.NewMediaPlaylist(windowSize, windowSize)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create optimized playlist: %w", err)
 	}
 	playlist.SetVersion(6)
+	playlist.Closed = false  // Keep playlist open for live streaming (sliding window)
 	
 	hls := &HLSChannel{
 		que:             que,
@@ -282,7 +281,7 @@ func (h *HLSChannel) generateSegments() {
 	}
 }
 
-// createSegment creates a new HLS segment
+// createSegment creates a new HLS segment (for direct/synchronous processing)
 func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 	if h == nil {
 		common.LogErrorln("Cannot create segment: HLS channel is nil")
@@ -293,9 +292,6 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 		return // Skip empty segments
 	}
 
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
-
 	// Convert data to TS format
 	tsData, err := h.convertToTS(data)
 	if err != nil {
@@ -303,56 +299,22 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 		return
 	}
 
-	segmentURI := fmt.Sprintf("/live/segment_%d.ts", h.sequenceNumber)
+	// Note: sequence number should be managed by the caller
+	currentSeq := h.sequenceNumber
+	h.sequenceNumber++ // Increment for next segment
+	
+	segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
 		URI:      segmentURI,
 		Duration: durationSeconds,
 		Data:     tsData,
-		Sequence: h.sequenceNumber,
+		Sequence: currentSeq,
 	}
 
-	// Add segment to our local list with sliding window management
-	h.segments = append(h.segments, segment)
-	
-	// Remove old segments if we exceed max (manual sliding window for our data)
-	if len(h.segments) > h.maxSegments {
-		h.segments = h.segments[1:]
-	}
-
-	// Add segment to playlist with proper sliding window management
-	// First, check if playlist is at capacity and remove oldest segment if needed
-	currentCount := h.playlist.Count()
-	if currentCount >= uint(h.maxSegments) {
-		// Remove the oldest segment to make room for the new one
-		err = h.playlist.Remove()
-		if err != nil {
-			common.LogErrorf("Failed to remove oldest segment from playlist: %v\n", err)
-			// Continue anyway - try to append
-		} else {
-			common.LogDebugf("Removed oldest segment from playlist (sliding window), new count: %d\n", h.playlist.Count())
-		}
-	}
-
-	// Now append the new segment
-	err = h.playlist.Append(segmentURI, durationSeconds, "")
-	if err != nil {
-		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
-		return
-	}
-
-	common.LogDebugf("Added segment to playlist. Current count: %d, Max: %d\n", h.playlist.Count(), h.maxSegments)
-
-	// Update target duration if needed
-	if duration > h.targetDuration {
-		h.targetDuration = duration
-		h.playlist.TargetDuration = uint(durationSeconds)
-	}
-
-	h.sequenceNumber++
-	
-	common.LogDebugf("Created HLS segment %d with duration %.2fs\n", segment.Sequence, durationSeconds)
+	// Use the centralized segment addition method
+	h.addGeneratedSegment(segment)
 }
 
 // convertToTS converts raw data to MPEG-TS format
