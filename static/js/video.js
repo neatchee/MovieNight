@@ -120,9 +120,17 @@ function initHLSPlayer() {
     // Use hls.js for browsers without native HLS support
     else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
         console.log('Using hls.js');
+        console.log('Hls object:', Hls);
+        console.log('Hls.isSupported():', Hls.isSupported());
+        console.log('Hls version:', Hls.version || 'version unknown');
         initHLSWithLibrary(videoElement, hlsSource);
     } else {
         console.warn('HLS not supported, falling back to MPEG-TS');
+        if (typeof Hls === 'undefined') {
+            console.error('HLS.js library not loaded');
+        } else {
+            console.error('HLS.js not supported on this browser');
+        }
         initMPEGTSPlayer();
     }
     
@@ -132,90 +140,56 @@ function initHLSPlayer() {
 function initHLSWithLibrary(videoElement, hlsSource) {
     console.log('Initializing HLS.js with source:', hlsSource);
     
-    // Advanced hls.js configuration utilizing full feature set
+    // Simplified HLS.js configuration for better compatibility
     const hlsConfig = {
-        // Core settings
-        debug: false,
-        enableWorker: true,
-        lowLatencyMode: true,
+        // Core settings - only use well-supported options
+        debug: true,                        // Enable debug for troubleshooting
+        enableWorker: true,                 // Enable worker for better performance
+        lowLatencyMode: true,               // Enable low latency mode
         
-        // Buffer management for optimal performance
-        backBufferLength: 90,               // Keep 90s of back buffer
-        liveBackBufferLength: 60,           // Keep 60s for live streams
-        maxBufferLength: 30,                // Maximum forward buffer
-        maxMaxBufferLength: 600,            // Absolute maximum buffer
-        maxBufferSize: 60 * 1000 * 1000,    // 60MB max buffer size
-        maxBufferHole: 0.5,                 // Max gap in buffer
+        // Buffer management - conservative settings
+        maxBufferLength: 30,                // Maximum forward buffer (30s)
+        maxMaxBufferLength: 60,             // Absolute maximum buffer (60s)
         
-        // Live streaming optimizations
+        // Live streaming optimizations - basic settings
         liveSyncDurationCount: 3,           // Segments to keep from live edge
-        liveMaxLatencyDurationCount: 10,    // Max latency in segments
-        maxLiveSyncPlaybackRate: 1.5,       // Max catchup playback rate
-        liveDurationInfinity: true,         // Handle infinite live streams
+        liveMaxLatencyDurationCount: 5,     // Max latency in segments
         
-        // Network and loading
+        // Network timeouts - reasonable values
         manifestLoadingTimeOut: 10000,      // 10s timeout for manifest
-        manifestLoadingMaxRetry: 4,         // Retry manifest 4 times
-        manifestLoadingRetryDelay: 500,     // Start with 500ms delay
+        manifestLoadingMaxRetry: 3,         // Retry manifest 3 times
         levelLoadingTimeOut: 10000,         // 10s timeout for segments
-        levelLoadingMaxRetry: 4,            // Retry segments 4 times
-        levelLoadingRetryDelay: 500,        // Start with 500ms delay
         fragLoadingTimeOut: 20000,          // 20s timeout for fragments
-        fragLoadingMaxRetry: 6,             // Retry fragments 6 times
-        fragLoadingRetryDelay: 1000,        // Start with 1s delay
         
-        // Quality and adaptation
+        // Quality settings
         startLevel: -1,                     // Auto start level
         capLevelToPlayerSize: true,         // Cap quality to player size
-        capLevelOnFPSDrop: true,            // Drop quality on FPS drop
         
-        // Advanced features
-        enableSoftwareAES: true,            // Software AES decryption
-        enableCEA708Captions: true,         // Support for captions
-        enableWebVTT: true,                 // WebVTT subtitle support
-        enableIMSC1: true,                  // IMSC1 subtitle support
-        
-        // Error recovery
-        nudgeOffset: 0.1,                   // Nudge offset for recovery
-        nudgeMaxRetry: 3,                   // Max nudge retries
-        maxSeekHole: 2,                     // Max seek hole to jump
-        
-        // Watchdog timers
-        highBufferWatchdogPeriod: 2,        // Buffer watchdog period
-        stallReported: false,               // Track stall reporting
-        
-        // Advanced buffer management
-        appendErrorMaxRetry: 3,             // Retry append errors
-        loader: undefined,                  // Use default loader
-        fLoader: undefined,                 // Use default fragment loader
-        pLoader: undefined,                 // Use default playlist loader
-        
-        // Progressive enhancement
-        progressive: false,                 // Disable progressive download
-        lowLatencyMode: true,               // Enable low latency features
-        
-        // Bandwidth estimation
-        abrEwmaFastLive: 3.0,              // Fast EWMA for live
-        abrEwmaSlowLive: 9.0,              // Slow EWMA for live
-        abrEwmaFastVoD: 3.0,               // Fast EWMA for VoD
-        abrEwmaSlowVoD: 9.0,               // Slow EWMA for VoD
-        abrEwmaDefaultEstimate: 500000,     // Default bandwidth estimate (500kbps)
-        abrBandWidthFactor: 0.95,          // Bandwidth safety factor
-        abrBandWidthUpFactor: 0.7,         // Factor for switching up
-        abrMaxWithRealBitrate: false,       // Use measured bitrate
-        maxStarvationDelay: 4,              // Max starvation delay
-        maxLoadingDelay: 4,                 // Max loading delay
-        
-        // Additional iOS optimizations
-        ...(isIOS() && {
-            liveSyncDurationCount: 2,       // Shorter sync for iOS
-            liveMaxLatencyDurationCount: 6, // Lower latency for iOS
-            maxBufferLength: 20,            // Smaller buffer for mobile
-            backBufferLength: 30,           // Smaller back buffer
-        })
+        // Basic features
+        autoStartLoad: true,                // Auto start loading
+        startPosition: -1                   // Start from live edge
     };
 
-    var hls = new Hls(hlsConfig);
+    var hls;
+    try {
+        // Try with our configuration first
+        console.log('Creating HLS instance with config:', hlsConfig);
+        hls = new Hls(hlsConfig);
+    } catch (e) {
+        console.error('Failed to create HLS with config, trying minimal config:', e);
+        // Fallback to minimal configuration
+        try {
+            hls = new Hls({
+                debug: true,
+                lowLatencyMode: true,
+                autoStartLoad: true
+            });
+        } catch (e2) {
+            console.error('Failed to create HLS with minimal config, trying default:', e2);
+            // Last resort - use completely default configuration
+            hls = new Hls();
+        }
+    }
     
     // Store reference for cleanup
     window.hlsPlayer = hls;
