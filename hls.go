@@ -203,6 +203,7 @@ func (h *HLSChannel) generateSegments() {
 
 	segmentBuffer := make([]byte, 0, 1024*1024) // 1MB initial buffer
 	segmentStartTime := time.Now()
+	lastDataTime := time.Now()
 
 	for {
 		select {
@@ -216,10 +217,22 @@ func (h *HLSChannel) generateSegments() {
 				if err != io.EOF {
 					common.LogErrorf("Error reading from stream cursor: %v\n", err)
 				}
+				
+				// If we haven't seen data in a while but have some buffered, create a segment
+				timeSinceData := time.Since(lastDataTime)
+				if len(segmentBuffer) > 0 && timeSinceData > 5*time.Second {
+					common.LogDebugf("Creating segment due to timeout with %d bytes\n", len(segmentBuffer))
+					h.createSegment(segmentBuffer, time.Since(segmentStartTime))
+					segmentBuffer = segmentBuffer[:0]
+					segmentStartTime = time.Now()
+				}
+				
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
+			lastDataTime = time.Now()
+			
 			// Convert packet to bytes for buffering
 			packetData := packet.Data
 			if packetData != nil {
@@ -366,6 +379,18 @@ func (h *HLSChannel) GetPlaylist() string {
 	h.playlist.TargetDuration = uint(h.targetDuration.Seconds())
 	
 	return h.playlist.String()
+}
+
+// HasSegments returns true if the playlist has any segments
+func (h *HLSChannel) HasSegments() bool {
+	if h == nil {
+		return false
+	}
+
+	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+
+	return len(h.segments) > 0
 }
 
 // GetSegment returns a specific segment by sequence number

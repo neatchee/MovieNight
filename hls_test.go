@@ -220,6 +220,35 @@ func TestHLSChannel_ViewerTracking(t *testing.T) {
 	assert.Equal(t, 0, hlsChan.GetViewerCount())
 }
 
+func TestHLSChannel_HasSegments(t *testing.T) {
+	// Test with nil channel
+	var nilChan *HLSChannel
+	require.False(t, nilChan.HasSegments())
+	
+	// Create HLS channel
+	queue := pubsub.NewQueue()
+	hlsChan, err := NewHLSChannel(queue)
+	require.NoError(t, err)
+	require.NotNil(t, hlsChan)
+	defer hlsChan.Stop()
+	
+	// Initially should have no segments
+	require.False(t, hlsChan.HasSegments())
+	
+	// Add a segment manually for testing
+	hlsChan.mutex.Lock()
+	hlsChan.segments = append(hlsChan.segments, HLSSegment{
+		URI:      "/test/segment_0.ts",
+		Duration: 5.0,
+		Data:     []byte("test data"),
+		Sequence: 0,
+	})
+	hlsChan.mutex.Unlock()
+	
+	// Now should have segments
+	require.True(t, hlsChan.HasSegments())
+}
+
 func TestHLSChannel_GetPlaylist(t *testing.T) {
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)

@@ -233,6 +233,14 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     // Add error handling for manifest loading issues
     hls.on(Hls.Events.ERROR, function(event, data) {
         console.error('HLS error:', data);
+        
+        // Handle level empty error specifically 
+        if (data.details === 'levelEmptyError') {
+            console.log('Non-fatal HLS error:', data.type, data.details);
+            // Don't do anything special - let HLS.js handle retries automatically
+            return;
+        }
+        
         if (data.fatal) {
             switch(data.type) {
                 case Hls.ErrorTypes.NETWORK_ERROR:
@@ -248,6 +256,13 @@ function initHLSWithLibrary(videoElement, hlsSource) {
                     // Fallback to MPEG-TS
                     initMPEGTSPlayer();
                     break;
+            }
+        } else {
+            // Handle non-fatal errors
+            if (data.details === 'levelEmptyError') {
+                console.log('Non-fatal HLS error:', data.type, data.details);
+            } else {
+                console.log('Other non-fatal error:', data.details);
             }
         }
     });

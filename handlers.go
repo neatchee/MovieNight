@@ -398,6 +398,23 @@ func handlePublish(conn *rtmp.Conn) {
 	if err != nil {
 		common.LogErrorf("Could not write header to streams: %v\n", err)
 	}
+	
+	// Initialize HLS channel for this stream immediately
+	common.LogDebugf("Creating HLS channel for stream: %s\n", streamPath)
+	hlsChan, err := NewHLSChannel(ch.que)
+	if err != nil {
+		common.LogErrorf("Failed to create HLS channel: %v\n", err)
+	} else {
+		ch.hlsChan = hlsChan
+		err = ch.hlsChan.Start()
+		if err != nil {
+			common.LogErrorf("Failed to start HLS channel: %v\n", err)
+			ch.hlsChan = nil
+		} else {
+			common.LogDebugf("HLS channel started for stream: %s\n", streamPath)
+		}
+	}
+	
 	channels[streamPath] = ch
 	l.Unlock()
 
@@ -512,6 +529,13 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 
 	// Initialize HLS channel if not already done
 	if ch.hlsChan == nil {
+		// Check if the queue has any data before creating HLS channel
+		if ch.que == nil {
+			common.LogDebugf("handleHLSStream: no queue available\n")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		
 		common.LogDebugf("handleHLSStream: initializing HLS channel\n")
 		hlsChan, err := NewHLSChannelWithDeviceOptimization(ch.que, r)
 		if err != nil {
@@ -561,9 +585,16 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 	playlist := hlsChan.GetPlaylist()
 	common.LogDebugf("handleHLSPlaylist: playlist length = %d\n", len(playlist))
 	
-	if playlist == "" {
-		common.LogDebugf("handleHLSPlaylist: playlist is empty\n")
-		w.WriteHeader(http.StatusNotFound)
+	// Check if playlist has segments rather than just being empty string
+	hasSegments := hlsChan.HasSegments()
+	common.LogDebugf("handleHLSPlaylist: hasSegments = %v\n", hasSegments)
+	
+	if playlist == "" || !hasSegments {
+		common.LogDebugf("handleHLSPlaylist: playlist is empty or has no segments\n")
+		// Return 503 (Service Unavailable) for empty playlists to indicate segments are still being generated
+		// This is more appropriate than 404 and allows clients to retry
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"))
 		return
 	}
 
