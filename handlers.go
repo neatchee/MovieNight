@@ -442,17 +442,28 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	l.RUnlock()
 
 	if ch != nil {
-		// Detect streaming format based on device capabilities
+		// Detect streaming format based on device capabilities or explicit request
 		streamingFormat := GetStreamingFormat(r)
 		
-		if streamingFormat == "hls" {
+		// Also check if this is an HLS playlist request (for native iOS)
+		if streamingFormat == "hls" || strings.HasSuffix(r.URL.Path, ".m3u8") || r.URL.Query().Get("format") == "hls" {
 			handleHLSStream(w, r, ch)
 		} else {
 			handleFLVStream(w, r, ch)
 		}
 	} else {
-		// Maybe HTTP_204 is better than HTTP_404
-		w.WriteHeader(http.StatusNoContent)
+		// When no stream is active, return appropriate response based on request type
+		if strings.HasSuffix(r.URL.Path, ".m3u8") || r.URL.Query().Get("format") == "hls" {
+			// For HLS requests, return a proper HTTP status
+			common.LogInfof("HLS request for inactive stream: %s\n", r.URL.Path)
+			w.Header().Set("Content-Type", GetContentTypeForFormat("hls"))
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(http.StatusServiceUnavailable) // 503 - Service Unavailable is more appropriate than 204
+		} else {
+			// For FLV requests, use the original behavior
+			common.LogInfof("FLV request for inactive stream: %s\n", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}
 		stats.resetViewers()
 	}
 }

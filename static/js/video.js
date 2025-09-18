@@ -44,7 +44,7 @@ function initHLSPlayer() {
     console.log('Initializing HLS player');
     
     let videoElement = document.querySelector('#videoElement');
-    const hlsSource = '/hls/live/playlist.m3u8';
+    const hlsSource = '/live?format=hls';
     
     // Check for native HLS support (iOS Safari)
     if (supportsHLS()) {
@@ -178,11 +178,11 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     
     // Manifest events
     hls.on(Hls.Events.MANIFEST_LOADING, function(event, data) {
-        console.log('Loading manifest from:', data.url);
+        console.log('Loading HLS manifest from:', data.url);
     });
     
     hls.on(Hls.Events.MANIFEST_LOADED, function(event, data) {
-        console.log('Manifest loaded, levels:', data.levels.length);
+        console.log('HLS manifest loaded, levels:', data.levels.length);
         logAvailableQualities(data.levels);
     });
     
@@ -346,7 +346,12 @@ function handleNonFatalError(hls, data) {
     switch(data.details) {
         case Hls.ErrorDetails.MANIFEST_LOAD_ERROR:
         case Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT:
-            console.warn('Manifest loading issue');
+            console.warn('Manifest loading issue - possibly no active stream');
+            // Check if it's a 503 Service Unavailable (no stream active)
+            if (data.response && data.response.code === 503) {
+                console.info('No active stream available. Waiting for stream to start...');
+                showNoStreamMessage();
+            }
             break;
             
         case Hls.ErrorDetails.LEVEL_LOAD_ERROR:
@@ -411,6 +416,25 @@ function showPlayButton() {
     if (overlay) {
         overlay.style.display = 'block';
         overlay.innerHTML = '<div class="play-button">▶ Click to Play</div>';
+    }
+}
+
+function showNoStreamMessage() {
+    // Show a message when no stream is active
+    const overlay = document.querySelector('#videoOverlay');
+    if (overlay) {
+        overlay.style.display = 'block';
+        overlay.innerHTML = '<div class="no-stream-message">📺 No active stream<br><small>Waiting for stream to start...</small></div>';
+        
+        // Add some basic styling
+        const style = overlay.style;
+        style.display = 'flex';
+        style.alignItems = 'center';
+        style.justifyContent = 'center';
+        style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+        style.color = 'white';
+        style.fontSize = '18px';
+        style.textAlign = 'center';
     }
 }
 
