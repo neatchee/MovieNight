@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zorchenhimer/MovieNight/common"
 )
 
 func TestDetectDeviceCapabilities(t *testing.T) {
@@ -247,6 +249,70 @@ func TestHLSChannel_HasSegments(t *testing.T) {
 	
 	// Now should have segments
 	require.True(t, hlsChan.HasSegments())
+}
+
+func TestHLSChannel_SlidingWindow(t *testing.T) {
+	// Setup logging for test
+	common.SetupLogging(common.LLError, "/dev/null")
+	
+	// Create HLS channel with small window for testing
+	queue := pubsub.NewQueue()
+	hlsChan, err := NewHLSChannel(queue)
+	require.NoError(t, err)
+	require.NotNil(t, hlsChan)
+	defer hlsChan.Stop()
+	
+	// Manually set small maxSegments for testing
+	hlsChan.maxSegments = 3
+	
+	// Recreate playlist with smaller window
+	windowSize := uint(hlsChan.maxSegments)
+	capacity := windowSize * 2
+	playlist, err := m3u8.NewMediaPlaylist(windowSize, capacity)
+	require.NoError(t, err)
+	playlist.SetVersion(6)
+	hlsChan.playlist = playlist
+	
+	// Test adding segments beyond window size
+	testData := []byte("test segment data")
+	
+	// Add segments one by one and verify sliding window behavior
+	for i := 0; i < 5; i++ {
+		// Create segment
+		hlsChan.createSegment(testData, 2*time.Second)
+		
+		// Check that we never exceed maxSegments in our local storage
+		hlsChan.mutex.RLock()
+		segmentCount := len(hlsChan.segments)
+		playlistCount := int(hlsChan.playlist.Count())
+		hlsChan.mutex.RUnlock()
+		
+		expectedSegments := i + 1
+		if expectedSegments > hlsChan.maxSegments {
+			expectedSegments = hlsChan.maxSegments
+		}
+		
+		assert.LessOrEqual(t, segmentCount, hlsChan.maxSegments, 
+			"Local segment count should not exceed maxSegments")
+		assert.LessOrEqual(t, playlistCount, hlsChan.maxSegments, 
+			"Playlist count should not exceed maxSegments")
+		assert.Equal(t, expectedSegments, segmentCount, 
+			"Local segment count should match expected after sliding window")
+		
+		t.Logf("Added segment %d: local_count=%d, playlist_count=%d, max=%d", 
+			i, segmentCount, playlistCount, hlsChan.maxSegments)
+	}
+	
+	// Final verification: should have exactly maxSegments
+	hlsChan.mutex.RLock()
+	finalSegmentCount := len(hlsChan.segments)
+	finalPlaylistCount := int(hlsChan.playlist.Count())
+	hlsChan.mutex.RUnlock()
+	
+	assert.Equal(t, hlsChan.maxSegments, finalSegmentCount, 
+		"Should have exactly maxSegments in local storage")
+	assert.Equal(t, hlsChan.maxSegments, finalPlaylistCount, 
+		"Should have exactly maxSegments in playlist")
 }
 
 func TestHLSChannel_GetPlaylist(t *testing.T) {
