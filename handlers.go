@@ -490,7 +490,7 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 
 	// Initialize HLS channel if not already done
 	if ch.hlsChan == nil {
-		hlsChan, err := NewHLSChannel(ch.que)
+		hlsChan, err := NewHLSChannelWithDeviceOptimization(ch.que, r)
 		if err != nil {
 			common.LogErrorf("Failed to create HLS channel: %v\n", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -597,7 +597,7 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 
 	// Initialize HLS channel if not already done
 	if ch.hlsChan == nil {
-		hlsChan, err := NewHLSChannel(ch.que)
+		hlsChan, err := NewHLSChannelWithDeviceOptimization(ch.que, r)
 		if err != nil {
 			common.LogErrorf("Failed to create HLS channel: %v\n", err)
 			w.WriteHeader(http.StatusInternalServerError)

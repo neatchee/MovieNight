@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ type HLSChannel struct {
 	maxSegments      int
 	viewers          map[string]int // Track HLS viewers
 	viewersMutex     sync.RWMutex
+	workerPool       *SegmentWorkerPool // For concurrent segment generation
+	config           HLSConfig
 }
 
 // HLSSegment represents a single HLS segment
@@ -56,18 +59,96 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 	// Set playlist properties for optimal HLS performance
 	playlist.SetVersion(3) // HLS version 3 for broad compatibility
 	
+	config := DefaultHLSConfig()
+	
 	hls := &HLSChannel{
 		que:             que,
 		playlist:        playlist,
 		segments:        make([]HLSSegment, 0),
-		targetDuration:  10 * time.Second, // 10 second segments for balance of latency/efficiency
+		targetDuration:  config.TargetDuration,
 		sequenceNumber:  0,
 		ctx:             ctx,
 		cancel:          cancel,
-		segmentDuration: 10 * time.Second,
-		maxSegments:     10, // Keep 10 segments in memory
+		segmentDuration: config.SegmentDuration,
+		maxSegments:     config.MaxSegments,
 		viewers:         make(map[string]int),
+		config:          config,
 	}
+
+	// Initialize worker pool for concurrent segment generation
+	hls.workerPool = NewSegmentWorkerPool(config, hls)
+
+	return hls, nil
+}
+
+// NewHLSChannelWithDeviceOptimization creates a new HLS channel optimized for specific device capabilities
+func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*HLSChannel, error) {
+	if que == nil {
+		return nil, fmt.Errorf("queue cannot be nil")
+	}
+
+	// Detect device capabilities for optimization
+	capabilities := DeviceCapabilities{}
+	if r != nil {
+		capabilities = DetectDeviceCapabilities(r)
+	}
+
+	qualitySettings := GetQualitySettings(capabilities)
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Create playlist with recommended settings for iOS compatibility
+	playlist, err := m3u8.NewMediaPlaylist(10, 10) // window size 10, capacity 10
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create playlist: %w", err)
+	}
+
+	// Set playlist properties for optimal HLS performance
+	playlist.SetVersion(3) // HLS version 3 for broad compatibility
+	
+	config := DefaultHLSConfig()
+	
+	// Apply device-specific optimizations
+	config.BitrateReduction = qualitySettings.BitrateMultiplier
+	
+	if capabilities.IsIOS && capabilities.IsMobile {
+		// Optimize for iOS mobile devices
+		config.SegmentDuration = 6 * time.Second  // Shorter segments for better seeking
+		config.MaxSegments = 8                     // Fewer segments to save memory
+		config.EnableLowLatency = true
+		config.MaxConcurrentSegments = 2          // Lower concurrency for mobile
+	} else if capabilities.IsAndroid {
+		// Optimize for Android devices
+		config.SegmentDuration = 8 * time.Second
+		config.MaxSegments = 10
+		config.MaxConcurrentSegments = 2
+	} else {
+		// Desktop optimization
+		config.SegmentDuration = 10 * time.Second
+		config.MaxSegments = 12
+		config.MaxConcurrentSegments = 4
+	}
+	
+	hls := &HLSChannel{
+		que:             que,
+		playlist:        playlist,
+		segments:        make([]HLSSegment, 0),
+		targetDuration:  config.TargetDuration,
+		sequenceNumber:  0,
+		ctx:             ctx,
+		cancel:          cancel,
+		segmentDuration: config.SegmentDuration,
+		maxSegments:     config.MaxSegments,
+		viewers:         make(map[string]int),
+		config:          config,
+	}
+
+	// Initialize worker pool for concurrent segment generation
+	hls.workerPool = NewSegmentWorkerPool(config, hls)
+
+	common.LogDebugf("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n", 
+		capabilities.IsIOS, capabilities.IsMobile, config.BitrateReduction)
 
 	return hls, nil
 }
@@ -78,14 +159,24 @@ func (h *HLSChannel) Start() error {
 		return fmt.Errorf("HLS channel is nil")
 	}
 
+	// Start the worker pool
+	if h.workerPool != nil {
+		h.workerPool.Start()
+	}
+
 	go h.generateSegments()
 	return nil
 }
 
 // Stop stops HLS segment generation
 func (h *HLSChannel) Stop() {
-	if h != nil && h.cancel != nil {
-		h.cancel()
+	if h != nil {
+		if h.workerPool != nil {
+			h.workerPool.Stop()
+		}
+		if h.cancel != nil {
+			h.cancel()
+		}
 	}
 }
 
@@ -129,7 +220,18 @@ func (h *HLSChannel) generateSegments() {
 
 			// Check if we should create a new segment
 			if time.Since(segmentStartTime) >= h.segmentDuration || len(segmentBuffer) > 2*1024*1024 {
-				h.createSegment(segmentBuffer, time.Since(segmentStartTime))
+				// Submit to worker pool for concurrent processing
+				if h.workerPool != nil {
+					h.workerPool.SubmitJob(
+						append([]byte(nil), segmentBuffer...), // Copy the buffer
+						time.Since(segmentStartTime),
+						h.sequenceNumber,
+					)
+					h.sequenceNumber++
+				} else {
+					// Fallback to synchronous processing
+					h.createSegment(segmentBuffer, time.Since(segmentStartTime))
+				}
 				segmentBuffer = segmentBuffer[:0] // Reset buffer
 				segmentStartTime = time.Now()
 			}
