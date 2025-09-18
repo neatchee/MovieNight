@@ -162,6 +162,11 @@ func run(args args) {
 			handleHLSSegment(w, r)
 			return
 		}
+		// Check if this is an HLS partial segment request
+		if strings.HasPrefix(r.URL.Path, "/live_partial_") && strings.HasSuffix(r.URL.Path, ".ts") {
+			handleHLSPartialSegment(w, r)
+			return
+		}
 		handleDefault(w, r)
 	}))
 

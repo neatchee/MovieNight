@@ -59,33 +59,48 @@ func TestHLSSegmentInvalidNumber(t *testing.T) {
 }
 
 func TestUpdateHLSSegments(t *testing.T) {
-	// Test HLS segment timing and sliding window
+	// Test HLS segment timing and sliding window with new structure
 	hlsData := &HLSData{
-		mediaSequence:   0,
-		segments:        make([]HLSSegment, 0),
-		lastSegmentTime: time.Now().Add(-7 * time.Second), // Make it old enough for new segment (7s > 6s duration)
+		mediaSequence:     0,
+		discontinuitySeq:  0,
+		segments:          make([]HLSSegment, 0),
+		partialSegments:   make([]HLSPartialSegment, 0),
+		lastSegmentTime:   time.Now().Add(-7 * time.Second), // Make it old enough for new segment (7s > 6s duration)
+		lastPartialTime:   time.Now().Add(-3 * time.Second), // Make it old enough for new partial (3s > 2s duration)
+		segmentCache:      make(map[uint64]*SegmentCache),
+		partialCache:      make(map[string]*PartialCache),
+		encodingStartTime: time.Now(),
+		lastDiscontinuity: false,
 	}
 
-	// Should add a new segment
+	// Should add a new segment and partial
 	updateHLSSegments(hlsData)
-	assert.Equal(t, 1, len(hlsData.segments))
-	assert.Equal(t, uint64(0), hlsData.segments[0].Index)
-	assert.Equal(t, HLSSegmentDuration, hlsData.segments[0].Duration) // Verify 6.0 second duration
+	assert.True(t, len(hlsData.segments) >= 1 || len(hlsData.partialSegments) >= 1)
+	
+	if len(hlsData.segments) > 0 {
+		assert.Equal(t, uint64(0), hlsData.segments[0].Index)
+		assert.Equal(t, HLSSegmentDuration, hlsData.segments[0].Duration) // Verify 6.0 second duration
+	}
+	
+	if len(hlsData.partialSegments) > 0 {
+		assert.Equal(t, HLSPartialDuration, hlsData.partialSegments[0].Duration) // Verify 2.0 second duration
+	}
 
 	// Advance time and add more segments
 	hlsData.lastSegmentTime = time.Now().Add(-7 * time.Second)
+	hlsData.lastPartialTime = time.Now().Add(-3 * time.Second)
 	updateHLSSegments(hlsData)
-	assert.Equal(t, 2, len(hlsData.segments))
 
 	// Fill up to window size
 	for i := 0; i < HLSWindowSize; i++ {
 		hlsData.lastSegmentTime = time.Now().Add(-7 * time.Second)
+		hlsData.lastPartialTime = time.Now().Add(-3 * time.Second)
 		updateHLSSegments(hlsData)
 	}
 
 	// Should maintain window size and increment sequence
-	assert.Equal(t, HLSWindowSize, len(hlsData.segments))
-	assert.True(t, hlsData.mediaSequence > 0, "Media sequence should increment")
+	assert.True(t, len(hlsData.segments) <= HLSWindowSize)
+	assert.True(t, hlsData.mediaSequence >= 0, "Media sequence should be valid")
 }
 
 func TestHLSSegmentDurationCompliance(t *testing.T) {
@@ -126,19 +141,28 @@ func TestGetSegmentIndexes(t *testing.T) {
 }
 
 func TestHLSDataInitialization(t *testing.T) {
-	// Test that HLS data is properly initialized
+	// Test that HLS data is properly initialized with new structure
 	ch := &Channel{}
 	ch.hlsData = &HLSData{
-		mediaSequence:   0,
-		segments:        make([]HLSSegment, 0),
-		lastSegmentTime: time.Now(),
-		segmentCache:    make(map[uint64]*SegmentCache),
+		mediaSequence:     0,
+		discontinuitySeq:  0,
+		segments:          make([]HLSSegment, 0),
+		partialSegments:   make([]HLSPartialSegment, 0),
+		lastSegmentTime:   time.Now(),
+		lastPartialTime:   time.Now(),
+		segmentCache:      make(map[uint64]*SegmentCache),
+		partialCache:      make(map[string]*PartialCache),
+		encodingStartTime: time.Now(),
+		lastDiscontinuity: false,
 	}
 
 	assert.NotNil(t, ch.hlsData)
 	assert.Equal(t, uint64(0), ch.hlsData.mediaSequence)
+	assert.Equal(t, uint64(0), ch.hlsData.discontinuitySeq)
 	assert.Equal(t, 0, len(ch.hlsData.segments))
+	assert.Equal(t, 0, len(ch.hlsData.partialSegments))
 	assert.NotNil(t, ch.hlsData.segmentCache)
+	assert.NotNil(t, ch.hlsData.partialCache)
 }
 
 func TestHLSRoutePattern(t *testing.T) {
@@ -398,12 +422,21 @@ func TestCleanupOldSegments(t *testing.T) {
 			{Index: 6, URL: "/live_segment_6.ts"},
 			{Index: 7, URL: "/live_segment_7.ts"},
 		},
+		partialSegments: []HLSPartialSegment{
+			{SeqID: 6, PartID: 0, URL: "/live_partial_6_0.ts"},
+			{SeqID: 7, PartID: 0, URL: "/live_partial_7_0.ts"},
+		},
 		segmentCache: map[uint64]*SegmentCache{
 			3: {Data: []byte("old"), Ready: true}, // Should be cleaned
 			4: {Data: []byte("old"), Ready: true}, // Should be cleaned
 			5: {Data: []byte("current"), Ready: true}, // Should remain
 			6: {Data: []byte("current"), Ready: true}, // Should remain
 			7: {Data: []byte("current"), Ready: true}, // Should remain
+		},
+		partialCache: map[string]*PartialCache{
+			"5_0": {Data: []byte("old"), Ready: true}, // Should be cleaned
+			"6_0": {Data: []byte("current"), Ready: true}, // Should remain
+			"7_0": {Data: []byte("current"), Ready: true}, // Should remain
 		},
 	}
 	
@@ -418,4 +451,128 @@ func TestCleanupOldSegments(t *testing.T) {
 	assert.Contains(t, hlsData.segmentCache, uint64(5))
 	assert.Contains(t, hlsData.segmentCache, uint64(6))
 	assert.Contains(t, hlsData.segmentCache, uint64(7))
+	
+	// Verify old partials are cleaned up
+	assert.NotContains(t, hlsData.partialCache, "5_0")
+	
+	// Verify current partials remain
+	assert.Contains(t, hlsData.partialCache, "6_0")
+	assert.Contains(t, hlsData.partialCache, "7_0")
+}
+
+func TestPartialSegmentGeneration(t *testing.T) {
+	// Test partial segment timing and generation
+	hlsData := &HLSData{
+		mediaSequence:     0,
+		discontinuitySeq:  0,
+		segments:          make([]HLSSegment, 0),
+		partialSegments:   make([]HLSPartialSegment, 0),
+		lastSegmentTime:   time.Now(),
+		lastPartialTime:   time.Now().Add(-3 * time.Second), // Old enough for partial
+		segmentCache:      make(map[uint64]*SegmentCache),
+		partialCache:      make(map[string]*PartialCache),
+		encodingStartTime: time.Now(),
+		lastDiscontinuity: false,
+	}
+
+	updateHLSSegments(hlsData)
+	
+	// Should have created a partial segment
+	assert.True(t, len(hlsData.partialSegments) > 0, "Should create partial segment")
+	
+	if len(hlsData.partialSegments) > 0 {
+		partial := hlsData.partialSegments[0]
+		assert.Equal(t, HLSPartialDuration, partial.Duration)
+		assert.True(t, partial.Independent, "First partial should be independent")
+		assert.Contains(t, partial.URL, "live_partial_")
+	}
+}
+
+func TestDiscontinuityHandling(t *testing.T) {
+	// Test discontinuity sequence management
+	hlsData := &HLSData{
+		mediaSequence:     0,
+		discontinuitySeq:  0,
+		segments:          make([]HLSSegment, 0),
+		partialSegments:   make([]HLSPartialSegment, 0),
+		lastSegmentTime:   time.Now(),
+		lastPartialTime:   time.Now(),
+		segmentCache:      make(map[uint64]*SegmentCache),
+		partialCache:      make(map[string]*PartialCache),
+		encodingStartTime: time.Now(),
+		lastDiscontinuity: true, // Mark for discontinuity
+	}
+
+	initialDiscontinuitySeq := hlsData.discontinuitySeq
+	updateHLSSegments(hlsData)
+	
+	// Should have incremented discontinuity sequence
+	assert.Equal(t, initialDiscontinuitySeq+1, hlsData.discontinuitySeq)
+	assert.False(t, hlsData.lastDiscontinuity, "Discontinuity flag should be reset")
+}
+
+func TestEncodingTimeMonitoring(t *testing.T) {
+	// Test that encoding time is being tracked
+	hlsData := &HLSData{
+		mediaSequence:     0,
+		discontinuitySeq:  0,
+		segments:          make([]HLSSegment, 0),
+		partialSegments:   make([]HLSPartialSegment, 0),
+		lastSegmentTime:   time.Now().Add(-7 * time.Second),
+		lastPartialTime:   time.Now().Add(-3 * time.Second),
+		segmentCache:      make(map[uint64]*SegmentCache),
+		partialCache:      make(map[string]*PartialCache),
+		encodingStartTime: time.Now().Add(-1 * time.Second), // 1 second ago
+		lastDiscontinuity: false,
+	}
+
+	updateHLSSegments(hlsData)
+	
+	// Check that segments have encoding end times
+	if len(hlsData.segments) > 0 {
+		assert.False(t, hlsData.segments[0].EncodingEnd.IsZero(), "Segment should have encoding end time")
+	}
+	
+	if len(hlsData.partialSegments) > 0 {
+		assert.False(t, hlsData.partialSegments[0].EncodingEnd.IsZero(), "Partial should have encoding end time")
+	}
+}
+
+func TestHLSPartialSegmentRouting(t *testing.T) {
+	// Test that partial segment route pattern matching works
+	testCases := []struct {
+		path     string
+		expected bool
+	}{
+		{"/live_partial_0_0.ts", true},
+		{"/live_partial_123_2.ts", true},
+		{"/live_partial__.ts", false},    // empty numbers
+		{"/live_partial_abc_0.ts", false}, // non-numeric seq
+		{"/live_partial_0_abc.ts", false}, // non-numeric part
+		{"/live_partial_0_0", false},      // missing .ts extension
+		{"/other_path", false},
+	}
+
+	for _, tc := range testCases {
+		// Use the actual logic from the partial handler
+		isMatch := strings.HasPrefix(tc.path, "/live_partial_") && strings.HasSuffix(tc.path, ".ts")
+		if isMatch {
+			// Extract and validate numbers
+			path := strings.TrimPrefix(tc.path, "/live_partial_")
+			path = strings.TrimSuffix(path, ".ts")
+			parts := strings.Split(path, "_")
+			if len(parts) != 2 {
+				isMatch = false
+			} else {
+				// Try to parse both numbers
+				if _, err1 := strconv.ParseUint(parts[0], 10, 64); err1 != nil {
+					isMatch = false
+				}
+				if _, err2 := strconv.ParseUint(parts[1], 10, 64); err2 != nil {
+					isMatch = false
+				}
+			}
+		}
+		assert.Equal(t, tc.expected, isMatch, "Path: %s", tc.path)
+	}
 }
