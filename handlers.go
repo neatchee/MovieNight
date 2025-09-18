@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -32,7 +33,8 @@ var (
 )
 
 type Channel struct {
-	que *pubsub.Queue
+	que     *pubsub.Queue
+	hlsChan *HLSChannel
 }
 
 type writeFlusher struct {
@@ -411,6 +413,10 @@ func handlePublish(conn *rtmp.Conn) {
 	stats.endStream()
 
 	l.Lock()
+	// Clean up HLS channel if it exists
+	if ch.hlsChan != nil {
+		ch.hlsChan.Stop()
+	}
 	delete(channels, streamPath)
 	l.Unlock()
 	ch.que.Close()
@@ -436,27 +442,189 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	l.RUnlock()
 
 	if ch != nil {
-		w.Header().Set("Content-Type", "video/x-flv")
-		w.Header().Set("Transfer-Encoding", "chunked")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(200)
-		flusher := w.(http.Flusher)
-		flusher.Flush()
-
-		muxer := flv.NewMuxerWriteFlusher(writeFlusher{httpflusher: flusher, Writer: w})
-		cursor := ch.que.Latest()
-
-		session, _ := sstore.Get(r, "moviesession")
-		stats.addViewer(session.ID)
-		err := avutil.CopyFile(muxer, cursor)
-		if err != nil {
-			common.LogErrorf("Could not copy video to connection: %v\n", err)
+		// Detect streaming format based on device capabilities
+		streamingFormat := GetStreamingFormat(r)
+		
+		if streamingFormat == "hls" {
+			handleHLSStream(w, r, ch)
+		} else {
+			handleFLVStream(w, r, ch)
 		}
-		stats.removeViewer(session.ID)
 	} else {
 		// Maybe HTTP_204 is better than HTTP_404
 		w.WriteHeader(http.StatusNoContent)
 		stats.resetViewers()
+	}
+}
+
+func handleFLVStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
+	if ch == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/x-flv")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(200)
+	flusher := w.(http.Flusher)
+	flusher.Flush()
+
+	muxer := flv.NewMuxerWriteFlusher(writeFlusher{httpflusher: flusher, Writer: w})
+	cursor := ch.que.Latest()
+
+	session, _ := sstore.Get(r, "moviesession")
+	stats.addViewer(session.ID)
+	err := avutil.CopyFile(muxer, cursor)
+	if err != nil {
+		common.LogErrorf("Could not copy video to connection: %v\n", err)
+	}
+	stats.removeViewer(session.ID)
+}
+
+func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
+	if ch == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Initialize HLS channel if not already done
+	if ch.hlsChan == nil {
+		hlsChan, err := NewHLSChannel(ch.que)
+		if err != nil {
+			common.LogErrorf("Failed to create HLS channel: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		ch.hlsChan = hlsChan
+		err = ch.hlsChan.Start()
+		if err != nil {
+			common.LogErrorf("Failed to start HLS channel: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Handle different HLS requests
+	if IsHLSPlaylistRequest(r) {
+		handleHLSPlaylist(w, r, ch.hlsChan)
+	} else if IsHLSSegmentRequest(r) {
+		handleHLSSegment(w, r, ch.hlsChan)
+	} else {
+		// Default to playlist for HLS requests
+		handleHLSPlaylist(w, r, ch.hlsChan)
+	}
+}
+
+func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
+	if hlsChan == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", GetContentTypeForFormat("hls"))
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	playlist := hlsChan.GetPlaylist()
+	if playlist == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Track viewer for HLS
+	session, _ := sstore.Get(r, "moviesession")
+	if session != nil {
+		hlsChan.AddViewer(session.ID)
+		stats.addViewer(session.ID)
+	}
+
+	w.WriteHeader(200)
+	w.Write([]byte(playlist))
+}
+
+func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
+	if hlsChan == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Extract segment URI from path
+	pathParts := strings.Split(r.URL.Path, "/")
+	segmentURI := pathParts[len(pathParts)-1]
+
+	if !IsValidSegmentURI(segmentURI) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	segmentData, err := hlsChan.GetSegmentByURI(segmentURI)
+	if err != nil {
+		common.LogErrorf("Failed to get HLS segment %s: %v\n", segmentURI, err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", GetContentTypeForFormat("ts"))
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache segments for 1 year
+	w.Header().Set("Content-Length", strconv.Itoa(len(segmentData)))
+
+	w.WriteHeader(200)
+	w.Write(segmentData)
+}
+
+func handleHLS(w http.ResponseWriter, r *http.Request) {
+	// Extract stream path from URL like /hls/streamname/playlist.m3u8 or /hls/streamname/segment_N.ts
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	streamName := pathParts[1]
+	
+	l.RLock()
+	ch := channels[streamName]
+	l.RUnlock()
+
+	if ch == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Initialize HLS channel if not already done
+	if ch.hlsChan == nil {
+		hlsChan, err := NewHLSChannel(ch.que)
+		if err != nil {
+			common.LogErrorf("Failed to create HLS channel: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		ch.hlsChan = hlsChan
+		err = ch.hlsChan.Start()
+		if err != nil {
+			common.LogErrorf("Failed to start HLS channel: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Handle different HLS requests
+	if len(pathParts) >= 3 {
+		fileName := pathParts[2]
+		if strings.HasSuffix(fileName, ".m3u8") {
+			handleHLSPlaylist(w, r, ch.hlsChan)
+		} else if strings.HasSuffix(fileName, ".ts") {
+			handleHLSSegment(w, r, ch.hlsChan)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	} else {
+		// Default to playlist
+		handleHLSPlaylist(w, r, ch.hlsChan)
 	}
 }
 
