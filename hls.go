@@ -49,17 +49,21 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	
-	// Create playlist with recommended settings for iOS compatibility
-	playlist, err := m3u8.NewMediaPlaylist(10, 10) // window size 10, capacity 10
+	config := DefaultHLSConfig()
+	
+	// Create playlist with sliding window for live streaming
+	// Use a larger capacity than window to allow proper sliding
+	windowSize := config.MaxSegments
+	capacity := windowSize + 5  // Extra capacity for smooth sliding
+	playlist, err := m3u8.NewMediaPlaylist(uint(windowSize), uint(capacity))
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create playlist: %w", err)
 	}
 
-	// Set playlist properties for optimal HLS performance
-	playlist.SetVersion(3) // HLS version 3 for broad compatibility
-	
-	config := DefaultHLSConfig()
+	// Set playlist properties for optimal HLS performance and sliding window
+	playlist.SetVersion(6) // HLS version 6 for better live streaming support
+	// Note: playlist.Live property may not be available in this version
 	
 	hls := &HLSChannel{
 		que:             que,
@@ -97,37 +101,41 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 	
 	ctx, cancel := context.WithCancel(context.Background())
 	
-	// Create playlist with recommended settings for iOS compatibility
-	playlist, err := m3u8.NewMediaPlaylist(10, 10) // window size 10, capacity 10
+	config := DefaultHLSConfig()
+	
+	// Create playlist with sliding window for live streaming
+	// Use a larger capacity than window to allow proper sliding
+	windowSize := config.MaxSegments
+	capacity := windowSize + 5  // Extra capacity for smooth sliding
+	playlist, err := m3u8.NewMediaPlaylist(uint(windowSize), uint(capacity))
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create playlist: %w", err)
 	}
 
-	// Set playlist properties for optimal HLS performance
-	playlist.SetVersion(3) // HLS version 3 for broad compatibility
-	
-	config := DefaultHLSConfig()
+	// Set playlist properties for optimal HLS performance and sliding window
+	playlist.SetVersion(6) // HLS version 6 for better live streaming support
+	// Note: playlist.Live property may not be available in this version
 	
 	// Apply device-specific optimizations
 	config.BitrateReduction = qualitySettings.BitrateMultiplier
 	
 	if capabilities.IsIOS && capabilities.IsMobile {
-		// Optimize for iOS mobile devices
-		config.SegmentDuration = 6 * time.Second  // Shorter segments for better seeking
-		config.MaxSegments = 8                     // Fewer segments to save memory
+		// Optimize for iOS mobile devices - prioritize low latency
+		config.SegmentDuration = 3 * time.Second  // Very short segments for low latency
+		config.MaxSegments = 5                     // Minimal segments for fast processing
 		config.EnableLowLatency = true
-		config.MaxConcurrentSegments = 2          // Lower concurrency for mobile
+		config.MaxConcurrentSegments = 3          // Balanced concurrency for mobile
 	} else if capabilities.IsAndroid {
 		// Optimize for Android devices
-		config.SegmentDuration = 8 * time.Second
-		config.MaxSegments = 10
-		config.MaxConcurrentSegments = 2
+		config.SegmentDuration = 4 * time.Second  // Short segments for good performance
+		config.MaxSegments = 6
+		config.MaxConcurrentSegments = 3
 	} else {
-		// Desktop optimization
-		config.SegmentDuration = 10 * time.Second
-		config.MaxSegments = 12
-		config.MaxConcurrentSegments = 4
+		// Desktop optimization - can handle slightly longer segments
+		config.SegmentDuration = 4 * time.Second  // Still short for low latency
+		config.MaxSegments = 8
+		config.MaxConcurrentSegments = 5
 	}
 	
 	hls := &HLSChannel{
@@ -219,12 +227,22 @@ func (h *HLSChannel) generateSegments() {
 			}
 
 			// Check if we should create a new segment
-			if time.Since(segmentStartTime) >= h.segmentDuration || len(segmentBuffer) > 2*1024*1024 {
+			// Use smaller buffer sizes and prefer time-based segmentation for low latency
+			elapsed := time.Since(segmentStartTime)
+			bufferSize := len(segmentBuffer)
+			
+			// Create segment if we hit time limit OR if buffer gets reasonably sized
+			// Prioritize time-based segmentation for lower latency
+			shouldCreateSegment := elapsed >= h.segmentDuration || 
+								  (bufferSize > 512*1024 && elapsed >= h.segmentDuration/2) ||
+								  bufferSize > 1024*1024 // Fallback for large buffers
+								  
+			if shouldCreateSegment && bufferSize > 0 {
 				// Submit to worker pool for concurrent processing
 				if h.workerPool != nil {
 					h.workerPool.SubmitJob(
 						append([]byte(nil), segmentBuffer...), // Copy the buffer
-						time.Since(segmentStartTime),
+						elapsed,
 						h.sequenceNumber,
 					)
 					h.sequenceNumber++
@@ -270,16 +288,21 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 		Sequence: h.sequenceNumber,
 	}
 
-	// Add segment to our list
+	// Add segment to our local list with sliding window management
 	h.segments = append(h.segments, segment)
-
-	// Remove old segments if we exceed max
+	
+	// Remove old segments if we exceed max (manual sliding window for our data)
 	if len(h.segments) > h.maxSegments {
 		h.segments = h.segments[1:]
 	}
 
-	// Add segment to playlist
-	err = h.playlist.Append(segmentURI, durationSeconds, "")
+	// Add segment to playlist using proper sliding window method
+	// The hls-m3u8 library manages its own sliding window internally
+	err = h.playlist.AppendSegment(&m3u8.MediaSegment{
+		SeqId:    h.sequenceNumber,
+		URI:      segmentURI,
+		Duration: durationSeconds,
+	})
 	if err != nil {
 		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
 		return

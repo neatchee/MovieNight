@@ -114,7 +114,7 @@ func TestHLSConfigurationDemo(t *testing.T) {
 	fmt.Printf("  Frame Rate: %d fps\n", iosQuality.FrameRate)
 	fmt.Printf("  Key Frame Interval: %d seconds\n", iosQuality.KeyFrameInterval)
 
-	assert.Equal(t, 10*time.Second, config.SegmentDuration)
+	assert.Equal(t, 4*time.Second, config.SegmentDuration)
 	assert.Equal(t, 0.7, config.BitrateReduction)
 	assert.True(t, config.EnableLowLatency)
 	assert.Equal(t, 0.7, iosQuality.BitrateMultiplier)

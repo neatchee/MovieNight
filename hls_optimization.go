@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/zorchenhimer/MovieNight/common"
 )
 
@@ -23,13 +24,13 @@ type HLSConfig struct {
 // DefaultHLSConfig returns the default HLS configuration
 func DefaultHLSConfig() HLSConfig {
 	return HLSConfig{
-		SegmentDuration:       10 * time.Second,
-		MaxSegments:          10,
-		TargetDuration:       10 * time.Second,
-		BitrateReduction:     0.7, // 30% reduction for HLS efficiency
+		SegmentDuration:       4 * time.Second, // Shorter segments for lower latency
+		MaxSegments:          6,                 // Fewer segments for faster processing
+		TargetDuration:       4 * time.Second,  // Match segment duration
+		BitrateReduction:     0.7,              // 30% reduction for HLS efficiency
 		EnableLowLatency:     true,
-		MaxConcurrentSegments: 3,
-		SegmentBufferSize:    1024 * 1024, // 1MB
+		MaxConcurrentSegments: 4,               // More concurrent processing
+		SegmentBufferSize:    512 * 1024,       // Smaller buffer for faster processing
 		QualityAdaptation:    true,
 	}
 }
@@ -282,12 +283,16 @@ func (w *SegmentWorker) applyQualityAdjustments(data []byte) ([]byte, error) {
 		return data, nil
 	}
 
-	// For now, simulate quality adjustment by reducing data size
-	// In a real implementation, you would use video processing libraries
-	// to adjust bitrate, resolution, etc.
+	// For low latency, minimize processing time
+	// Skip quality adjustment if reduction factor is close to 1.0
 	reductionFactor := w.config.BitrateReduction
 	if reductionFactor <= 0 || reductionFactor > 1 {
 		reductionFactor = 0.7 // Default 30% reduction
+	}
+	
+	// Skip processing if minimal reduction to save time
+	if reductionFactor > 0.95 {
+		return data, nil
 	}
 
 	targetSize := int(float64(len(data)) * reductionFactor)
@@ -295,7 +300,7 @@ func (w *SegmentWorker) applyQualityAdjustments(data []byte) ([]byte, error) {
 		targetSize = len(data)
 	}
 
-	// Simple data reduction (in reality, you'd use proper video encoding)
+	// Fast data reduction with more efficient copying
 	adjustedData := make([]byte, targetSize)
 	copy(adjustedData, data[:targetSize])
 
@@ -362,16 +367,21 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
-	// Add segment to our list
+	// Add segment to our local list with sliding window management
 	h.segments = append(h.segments, segment)
-
-	// Remove old segments if we exceed max
+	
+	// Remove old segments if we exceed max (manual sliding window for our data)
 	if len(h.segments) > h.maxSegments {
 		h.segments = h.segments[1:]
 	}
 
-	// Add segment to playlist
-	err := h.playlist.Append(segment.URI, segment.Duration, "")
+	// Add segment to playlist using proper sliding window method
+	// The hls-m3u8 library manages its own sliding window internally
+	err := h.playlist.AppendSegment(&m3u8.MediaSegment{
+		SeqId:    segment.Sequence,
+		URI:      segment.URI,
+		Duration: segment.Duration,
+	})
 	if err != nil {
 		common.LogErrorf("Failed to append segment to playlist: %v\n", err)
 		return

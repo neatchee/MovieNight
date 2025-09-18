@@ -185,9 +185,9 @@ func TestNewHLSChannel(t *testing.T) {
 
 	assert.Equal(t, queue, hlsChan.que)
 	assert.NotNil(t, hlsChan.playlist)
-	assert.Equal(t, 10*time.Second, hlsChan.targetDuration)
-	assert.Equal(t, 10*time.Second, hlsChan.segmentDuration)
-	assert.Equal(t, 10, hlsChan.maxSegments)
+	assert.Equal(t, 4*time.Second, hlsChan.targetDuration)
+	assert.Equal(t, 4*time.Second, hlsChan.segmentDuration)
+	assert.Equal(t, 6, hlsChan.maxSegments)
 	assert.Equal(t, uint64(0), hlsChan.sequenceNumber)
 	assert.NotNil(t, hlsChan.viewers)
 	assert.NotNil(t, hlsChan.ctx)
@@ -229,7 +229,7 @@ func TestHLSChannel_GetPlaylist(t *testing.T) {
 	playlist := hlsChan.GetPlaylist()
 	assert.NotEmpty(t, playlist)
 	assert.Contains(t, playlist, "#EXTM3U")
-	assert.Contains(t, playlist, "#EXT-X-VERSION:3")
+	assert.Contains(t, playlist, "#EXT-X-VERSION:6")
 }
 
 func TestHLSChannel_GetPlaylist_Nil(t *testing.T) {
