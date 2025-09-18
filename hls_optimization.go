@@ -359,7 +359,7 @@ func generateSegmentURI(sequence uint64) string {
 
 // addGeneratedSegment adds a generated segment to the HLS channel with proper sliding window
 func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
-	if h == nil {
+	if h == nil || h.playlist == nil {
 		return
 	}
 
@@ -376,9 +376,17 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.segments = h.segments[excess:]
 	}
 
-	// For live playlists with sliding window, use the Slide method which is specifically
-	// designed for this purpose and automatically manages the window size
-	h.playlist.Slide(segment.URI, segment.Duration, "")
+	// Safe playlist management to avoid index out of range errors
+	// Always use Append and let the library handle the sliding window internally
+	// The m3u8 library should automatically manage the sliding window when capacity is reached
+	err := h.playlist.Append(segment.URI, segment.Duration, "")
+	if err != nil {
+		// If append fails due to playlist being full, try to slide first then append
+		common.LogDebugf("Playlist append failed (probably full), attempting slide: %v", err)
+		
+		// Slide the playlist to remove the oldest segment and add the new one
+		h.playlist.Slide(segment.URI, segment.Duration, "")
+	}
 
 	// Update target duration if needed
 	duration := time.Duration(segment.Duration * float64(time.Second))

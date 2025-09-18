@@ -693,6 +693,53 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleLiveSegments handles HLS segment requests from /live/ path
+func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
+	// Extract segment name from URL like /live/segment_N.ts
+	path := strings.Trim(r.URL.Path, "/")
+	pathParts := strings.Split(path, "/")
+	
+	common.LogDebugf("handleLiveSegments: path=%s, pathParts=%v", path, pathParts)
+	
+	if len(pathParts) < 2 {
+		common.LogDebugf("handleLiveSegments: invalid path, not enough parts")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	segmentName := pathParts[1]
+	if !strings.HasSuffix(segmentName, ".ts") {
+		common.LogDebugf("handleLiveSegments: not a .ts file: %s", segmentName)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Use "live" as the default stream name for /live/ requests
+	streamName := "live"
+	
+	l.RLock()
+	ch := channels[streamName]
+	l.RUnlock()
+
+	if ch == nil {
+		common.LogDebugf("handleLiveSegments: no channel found for stream: %s", streamName)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Make sure we have an HLS channel
+	if ch.hlsChan == nil {
+		common.LogDebugf("handleLiveSegments: no HLS channel found for stream: %s", streamName)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	common.LogDebugf("handleLiveSegments: requesting segment %s from HLS channel", segmentName)
+	
+	// Handle the segment request
+	handleHLSSegment(w, r, ch.hlsChan)
+}
+
 func handleDefault(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		// not really an error for the server, but for the client.

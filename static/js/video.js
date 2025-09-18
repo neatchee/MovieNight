@@ -140,7 +140,7 @@ function initHLSPlayer() {
 function initHLSWithLibrary(videoElement, hlsSource) {
     console.log('Initializing HLS.js with source:', hlsSource);
     
-    // Simplified HLS.js configuration for better compatibility
+    // Modern HLS.js configuration using policy-based approach (v1.5.15+)
     const hlsConfig = {
         // Core settings - only use well-supported options
         debug: true,                        // Enable debug for troubleshooting
@@ -155,11 +155,57 @@ function initHLSWithLibrary(videoElement, hlsSource) {
         liveSyncDurationCount: 3,           // Segments to keep from live edge
         liveMaxLatencyDurationCount: 5,     // Max latency in segments
         
-        // Network timeouts - reasonable values
-        manifestLoadingTimeOut: 10000,      // 10s timeout for manifest
-        manifestLoadingMaxRetry: 3,         // Retry manifest 3 times
-        levelLoadingTimeOut: 10000,         // 10s timeout for segments
-        fragLoadingTimeOut: 20000,          // 20s timeout for fragments
+        // Modern policy-based network configuration (replaces deprecated timeout settings)
+        manifestLoadPolicy: {
+            default: {
+                maxTimeToFirstByteMs: 10000,
+                maxLoadTimeMs: 10000,
+                timeoutRetry: {
+                    maxNumRetry: 3,
+                    retryDelayMs: 0,
+                    maxRetryDelayMs: 0
+                },
+                errorRetry: {
+                    maxNumRetry: 3,
+                    retryDelayMs: 1000,
+                    maxRetryDelayMs: 8000
+                }
+            }
+        },
+        
+        playlistLoadPolicy: {
+            default: {
+                maxTimeToFirstByteMs: 10000,
+                maxLoadTimeMs: 10000,
+                timeoutRetry: {
+                    maxNumRetry: 2,
+                    retryDelayMs: 0,
+                    maxRetryDelayMs: 0
+                },
+                errorRetry: {
+                    maxNumRetry: 2,
+                    retryDelayMs: 1000,
+                    maxRetryDelayMs: 8000
+                }
+            }
+        },
+        
+        fragLoadPolicy: {
+            default: {
+                maxTimeToFirstByteMs: 20000,
+                maxLoadTimeMs: 20000,
+                timeoutRetry: {
+                    maxNumRetry: 4,
+                    retryDelayMs: 0,
+                    maxRetryDelayMs: 0
+                },
+                errorRetry: {
+                    maxNumRetry: 6,
+                    retryDelayMs: 1000,
+                    maxRetryDelayMs: 8000
+                }
+            }
+        },
         
         // Quality settings
         startLevel: -1,                     // Auto start level

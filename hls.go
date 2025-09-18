@@ -303,7 +303,7 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 	currentSeq := h.sequenceNumber
 	h.sequenceNumber++ // Increment for next segment
 	
-	segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
+	segmentURI := fmt.Sprintf("segment_%d.ts", currentSeq)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
