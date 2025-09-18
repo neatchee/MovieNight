@@ -49,6 +49,56 @@ MovieNight now supports dual streaming protocols:
 
 ## Client-Side Implementation
 
+### HLS.js Integration
+
+The implementation uses the official hls.js library (version 1.6.12) from CDN:
+```html
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.12/dist/hls.min.js"></script>
+```
+
+### Advanced HLS.js Features Utilized
+
+- **Comprehensive Error Recovery**: Network, media, and mux error handling with automatic fallback
+- **Quality Level Management**: Automatic and manual quality selection with UI controls  
+- **Buffer Optimization**: Advanced buffer management with configurable sizes and watchdog timers
+- **Low Latency Mode**: Optimized for live streaming with minimal delay
+- **Bandwidth Adaptation**: Intelligent bitrate selection based on network conditions
+- **Subtitle Support**: WebVTT, CEA-708, and IMSC1 subtitle formats
+- **Audio Track Selection**: Multi-language audio track support
+- **Performance Monitoring**: FPS drop detection and quality capping
+- **Statistics Collection**: Detailed playback metrics and debugging information
+
+### Enhanced Configuration
+
+```javascript
+const hlsConfig = {
+    // Core optimization
+    lowLatencyMode: true,
+    enableWorker: true,
+    
+    // Buffer management  
+    backBufferLength: 90,
+    liveBackBufferLength: 60,
+    maxBufferLength: 30,
+    
+    // Network resilience
+    manifestLoadingMaxRetry: 4,
+    levelLoadingMaxRetry: 4,
+    fragLoadingMaxRetry: 6,
+    
+    // Quality adaptation
+    capLevelToPlayerSize: true,
+    capLevelOnFPSDrop: true,
+    abrBandWidthFactor: 0.95,
+    
+    // iOS-specific optimizations
+    ...(isIOS() && {
+        liveSyncDurationCount: 2,
+        maxBufferLength: 20,
+    })
+};
+```
+
 ### JavaScript Detection
 
 ```javascript
