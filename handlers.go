@@ -400,7 +400,9 @@ func handlePublish(conn *rtmp.Conn) {
 	}
 	
 	// Initialize HLS channel for this stream immediately
-	common.LogDebugf("Creating HLS channel for stream: %s\n", streamPath)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("Creating HLS channel for stream: %s\n", streamPath)
+	}
 	hlsChan, err := NewHLSChannel(ch.que)
 	if err != nil {
 		common.LogErrorf("Failed to create HLS channel: %v\n", err)
@@ -411,7 +413,9 @@ func handlePublish(conn *rtmp.Conn) {
 			common.LogErrorf("Failed to start HLS channel: %v\n", err)
 			ch.hlsChan = nil
 		} else {
+		if settings != nil && settings.HLSDebugLogging {
 			common.LogDebugf("HLS channel started for stream: %s\n", streamPath)
+		}
 		}
 	}
 	
@@ -461,16 +465,22 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	// Debug logging for HLS troubleshooting
 	userAgent := r.Header.Get("User-Agent")
 	format := r.URL.Query().Get("format")
-	common.LogDebugf("handleLive: path=%s, format=%s, userAgent=%s\n", r.URL.Path, format, userAgent)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleLive: path=%s, format=%s, userAgent=%s\n", r.URL.Path, format, userAgent)
+	}
 
 	if ch != nil {
 		// Detect streaming format based on device capabilities or explicit request
 		streamingFormat := GetStreamingFormat(r)
+	if settings != nil && settings.HLSDebugLogging {
 		common.LogDebugf("Detected streaming format: %s\n", streamingFormat)
+	}
 		
 		// Also check if this is an HLS playlist request (for native iOS)
 		if streamingFormat == "hls" || strings.HasSuffix(r.URL.Path, ".m3u8") || r.URL.Query().Get("format") == "hls" {
+		if settings != nil && settings.HLSDebugLogging {
 			common.LogDebugf("Routing to HLS handler\n")
+		}
 			handleHLSStream(w, r, ch)
 		} else {
 			common.LogDebugf("Routing to FLV handler\n")
@@ -519,7 +529,9 @@ func handleFLVStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 }
 
 func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
-	common.LogDebugf("handleHLSStream called for path: %s\n", r.URL.Path)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleHLSStream called for path: %s\n", r.URL.Path)
+	}
 	
 	if ch == nil {
 		common.LogDebugf("handleHLSStream: channel is nil\n")
@@ -568,7 +580,9 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 }
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
-	common.LogDebugf("handleHLSPlaylist called\n")
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleHLSPlaylist called\n")
+	}
 	
 	if hlsChan == nil {
 		common.LogDebugf("handleHLSPlaylist: hlsChan is nil\n")
@@ -583,11 +597,15 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 	w.Header().Set("Expires", "0")
 
 	playlist := hlsChan.GetPlaylist()
-	common.LogDebugf("handleHLSPlaylist: playlist length = %d\n", len(playlist))
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleHLSPlaylist: playlist length = %d\n", len(playlist))
+	}
 	
 	// Check if playlist has segments rather than just being empty string
 	hasSegments := hlsChan.HasSegments()
-	common.LogDebugf("handleHLSPlaylist: hasSegments = %v\n", hasSegments)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleHLSPlaylist: hasSegments = %v\n", hasSegments)
+	}
 	
 	if playlist == "" || !hasSegments {
 		common.LogDebugf("handleHLSPlaylist: playlist is empty or has no segments\n")
@@ -607,7 +625,9 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 
 	w.WriteHeader(200)
 	w.Write([]byte(playlist))
-	common.LogDebugf("handleHLSPlaylist: playlist sent successfully\n")
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleHLSPlaylist: playlist sent successfully\n")
+	}
 }
 
 func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
@@ -703,7 +723,9 @@ func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	pathParts := strings.Split(path, "/")
 	
-	common.LogDebugf("handleLiveSegments: path=%s, pathParts=%v", path, pathParts)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleLiveSegments: path=%s, pathParts=%v", path, pathParts)
+	}
 	
 	if len(pathParts) < 2 {
 		common.LogDebugf("handleLiveSegments: invalid path, not enough parts")
@@ -738,7 +760,9 @@ func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	common.LogDebugf("handleLiveSegments: requesting segment %s from HLS channel", segmentName)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("handleLiveSegments: requesting segment %s from HLS channel", segmentName)
+	}
 	
 	// Handle the segment request
 	handleHLSSegment(w, r, ch.hlsChan)

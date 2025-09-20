@@ -1,5 +1,67 @@
 /// <reference path='./both.js' />
 
+/**
+ * HLS Debug Logging Management
+ * 
+ * Debug logging is controlled via sessionStorage and URL parameters:
+ * - Enable debug: Add ?debug=enable to URL, or run `sessionStorage.setItem('MovieNight-HLS-Debug', 'true')` in console
+ * - Disable debug: Add ?debug=disable to URL, or run `sessionStorage.removeItem('MovieNight-HLS-Debug')` in console
+ * - Check status: Run `sessionStorage.getItem('MovieNight-HLS-Debug')` in console
+ * 
+ * Debug logging includes:
+ * - HLS player initialization and configuration
+ * - Fragment loading and buffering events
+ * - Quality switching and adaptive bitrate events
+ * - Device detection and format selection
+ * - Buffer status and statistics
+ * 
+ * Note: Errors and critical warnings are always logged regardless of debug setting.
+ */
+
+// Debug logging management
+const DEBUG_STORAGE_KEY = 'MovieNight-HLS-Debug';
+
+// Check URL parameters for debug control
+function initializeDebugMode() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const debugParam = urlParams.get('debug');
+    
+    if (debugParam === 'enable') {
+        sessionStorage.setItem(DEBUG_STORAGE_KEY, 'true');
+        console.log('HLS debug logging enabled via URL parameter');
+    } else if (debugParam === 'disable') {
+        sessionStorage.removeItem(DEBUG_STORAGE_KEY);
+        console.log('HLS debug logging disabled via URL parameter');
+    }
+}
+
+// Check if debug logging is enabled
+function isDebugEnabled() {
+    return sessionStorage.getItem(DEBUG_STORAGE_KEY) === 'true';
+}
+
+// Debug logging wrapper
+function debugLog(...args) {
+    if (isDebugEnabled()) {
+        console.log('[HLS Debug]', ...args);
+    }
+}
+
+function debugWarn(...args) {
+    if (isDebugEnabled()) {
+        console.warn('[HLS Debug]', ...args);
+    }
+}
+
+function debugError(...args) {
+    if (isDebugEnabled()) {
+        console.error('[HLS Debug]', ...args);
+    }
+}
+
+// Initialize debug mode on page load
+document.addEventListener('DOMContentLoaded', initializeDebugMode);
+
 // Device detection utilities - prioritizing User Agent string
 function isIOS() {
     const userAgent = navigator.userAgent;
@@ -57,13 +119,13 @@ function shouldUseHLS() {
     
     // Force HLS for iOS devices (prioritizing User Agent detection)
     if (isIOS()) {
-        console.log('iOS detected via User Agent, using HLS');
+        debugLog('iOS detected via User Agent, using HLS');
         return true;
     }
     
     // For Android devices, also prefer HLS if supported
     if (isAndroid() && typeof Hls !== 'undefined' && Hls.isSupported()) {
-        console.log('Android detected with HLS.js support, using HLS');
+        debugLog('Android detected with HLS.js support, using HLS');
         return true;
     }
     
@@ -72,14 +134,14 @@ function shouldUseHLS() {
 }
 
 function initPlayer() {
-    console.log('initPlayer: User Agent:', navigator.userAgent);
-    console.log('initPlayer: isIOS():', isIOS());
-    console.log('initPlayer: isAndroid():', isAndroid());
-    console.log('initPlayer: isMobile():', isMobile());
-    console.log('initPlayer: supportsHLS():', supportsHLS());
+    debugLog('initPlayer: User Agent:', navigator.userAgent);
+    debugLog('initPlayer: isIOS():', isIOS());
+    debugLog('initPlayer: isAndroid():', isAndroid());
+    debugLog('initPlayer: isMobile():', isMobile());
+    debugLog('initPlayer: supportsHLS():', supportsHLS());
     
     const useHLS = shouldUseHLS();
-    console.log('initPlayer: shouldUseHLS():', useHLS);
+    debugLog('initPlayer: shouldUseHLS():', useHLS);
     
     if (useHLS) {
         initHLSPlayer();
@@ -89,43 +151,43 @@ function initPlayer() {
 }
 
 function initHLSPlayer() {
-    console.log('Initializing HLS player');
+    debugLog('Initializing HLS player');
     
     let videoElement = document.querySelector('#videoElement');
     const hlsSource = '/live?format=hls';
     
     // Check for native HLS support (iOS Safari)
     if (supportsHLS()) {
-        console.log('Using native HLS support');
+        debugLog('Using native HLS support');
         videoElement.src = hlsSource;
         videoElement.addEventListener('loadedmetadata', function() {
             videoElement.play().catch(e => {
-                console.warn('Autoplay failed:', e);
+                debugWarn('Autoplay failed:', e);
             });
         });
         
         // Add error handling for native HLS
         videoElement.addEventListener('error', function(e) {
-            console.error('Native HLS error:', e);
+            console.error('Native HLS error:', e); // Keep error always visible
             // Fallback to hls.js or MPEG-TS
             if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                console.log('Falling back to hls.js');
+                debugLog('Falling back to hls.js');
                 initHLSWithLibrary(videoElement, hlsSource);
             } else {
-                console.log('Falling back to MPEG-TS');
+                debugLog('Falling back to MPEG-TS');
                 initMPEGTSPlayer();
             }
         });
     } 
     // Use hls.js for browsers without native HLS support
     else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-        console.log('Using hls.js');
-        console.log('Hls object:', Hls);
-        console.log('Hls.isSupported():', Hls.isSupported());
-        console.log('Hls version:', Hls.version || 'version unknown');
+        debugLog('Using hls.js');
+        debugLog('Hls object:', Hls);
+        debugLog('Hls.isSupported():', Hls.isSupported());
+        debugLog('Hls version:', Hls.version || 'version unknown');
         initHLSWithLibrary(videoElement, hlsSource);
     } else {
-        console.warn('HLS not supported, falling back to MPEG-TS');
+        console.warn('HLS not supported, falling back to MPEG-TS'); // Keep warning always visible
         if (typeof Hls === 'undefined') {
             console.error('HLS.js library not loaded');
         } else {
@@ -138,7 +200,7 @@ function initHLSPlayer() {
 }
 
 function initHLSWithLibrary(videoElement, hlsSource) {
-    console.log('Initializing HLS.js with source:', hlsSource);
+    debugLog('Initializing HLS.js with source:', hlsSource);
     
     // Modern HLS.js configuration using policy-based approach (v1.6.12+)
     const hlsConfig = {
@@ -219,10 +281,10 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     var hls;
     try {
         // Try with our configuration first
-        console.log('Creating HLS instance with config:', hlsConfig);
+        debugLog('Creating HLS instance with config:', hlsConfig);
         hls = new Hls(hlsConfig);
     } catch (e) {
-        console.error('Failed to create HLS with config, trying minimal config:', e);
+        console.error('Failed to create HLS with config, trying minimal config:', e); // Keep error always visible
         // Fallback to minimal configuration
         try {
             hls = new Hls({
@@ -231,7 +293,7 @@ function initHLSWithLibrary(videoElement, hlsSource) {
                 autoStartLoad: true
             });
         } catch (e2) {
-            console.error('Failed to create HLS with minimal config, trying default:', e2);
+            console.error('Failed to create HLS with minimal config, trying default:', e2); // Keep error always visible
             // Last resort - use completely default configuration
             hls = new Hls();
         }
@@ -241,12 +303,12 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     window.hlsPlayer = hls;
     
     // Load and attach media - proper order is important
-    console.log('Attaching HLS to video element');
+    debugLog('Attaching HLS to video element');
     hls.attachMedia(videoElement);
     
     // Wait for media to be attached before loading source
     hls.on(Hls.Events.MEDIA_ATTACHED, function() {
-        console.log('Media attached, now loading source:', hlsSource);
+        debugLog('Media attached, now loading source:', hlsSource);
         hls.loadSource(hlsSource);
     });
     
@@ -254,23 +316,23 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     
     // Manifest events
     hls.on(Hls.Events.MANIFEST_LOADING, function(event, data) {
-        console.log('Loading HLS manifest from:', data.url);
+        debugLog('Loading HLS manifest from:', data.url);
     });
     
     hls.on(Hls.Events.MANIFEST_LOADED, function(event, data) {
-        console.log('HLS manifest loaded, levels:', data.levels.length);
+        debugLog('HLS manifest loaded, levels:', data.levels.length);
         logAvailableQualities(data.levels);
     });
     
     hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
-        console.log('HLS manifest parsed, starting playback');
-        console.log('Available levels:', data.levels.length);
-        console.log('Audio tracks:', data.audioTracks?.length || 0);
-        console.log('Subtitle tracks:', data.subtitleTracks?.length || 0);
+        debugLog('HLS manifest parsed, starting playback');
+        debugLog('Available levels:', data.levels.length);
+        debugLog('Audio tracks:', data.audioTracks?.length || 0);
+        debugLog('Subtitle tracks:', data.subtitleTracks?.length || 0);
         
         // Auto-play with better error handling
         videoElement.play().catch(e => {
-            console.warn('Autoplay failed:', e);
+            debugWarn('Autoplay failed:', e);
             // Show click-to-play overlay if autoplay fails
             showPlayButton();
         });
@@ -278,7 +340,7 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     
     // Add comprehensive error handling
     hls.on(Hls.Events.ERROR, function(event, data) {
-        console.error('HLS error:', data);
+        console.error('HLS error:', data); // Keep errors always visible
         
         if (data.fatal) {
             handleFatalError(hls, data, videoElement);
@@ -289,25 +351,25 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     
     // Level (quality) events
     hls.on(Hls.Events.LEVEL_SWITCHING, function(event, data) {
-        console.log('Switching to level:', data.level);
+        debugLog('Switching to level:', data.level);
     });
     
     hls.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {
-        console.log('Switched to level:', data.level);
+        debugLog('Switched to level:', data.level);
         updateQualityIndicator(data.level);
     });
     
     // Fragment events for monitoring
     hls.on(Hls.Events.FRAG_LOADING, function(event, data) {
-        console.debug('Loading fragment:', data.frag.sn);
+        debugLog('Loading fragment:', data.frag.sn);
     });
     
     hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
-        console.debug('Fragment loaded:', data.frag.sn, 'duration:', data.frag.duration);
+        debugLog('Fragment loaded:', data.frag.sn, 'duration:', data.frag.duration);
     });
     
     hls.on(Hls.Events.FRAG_BUFFERED, function(event, data) {
-        console.debug('Fragment buffered:', data.frag.sn);
+        debugLog('Fragment buffered:', data.frag.sn);
         updateBufferIndicator();
     });
     
@@ -322,17 +384,17 @@ function initHLSWithLibrary(videoElement, hlsSource) {
 function handleFatalError(hls, data, videoElement) {
     switch(data.type) {
         case Hls.ErrorTypes.NETWORK_ERROR:
-            console.log('Fatal network error, attempting recovery...');
+            console.log('Fatal network error, attempting recovery...'); // Keep recovery attempts visible
             hls.startLoad();
             break;
             
         case Hls.ErrorTypes.MEDIA_ERROR:
-            console.log('Fatal media error, attempting recovery...');
+            console.log('Fatal media error, attempting recovery...'); // Keep recovery attempts visible
             hls.recoverMediaError();
             break;
             
         case Hls.ErrorTypes.MUX_ERROR:
-            console.log('Fatal mux error, attempting media recovery...');
+            console.log('Fatal mux error, attempting media recovery...'); // Keep recovery attempts visible
             hls.recoverMediaError();
             break;
             
@@ -340,7 +402,7 @@ function handleFatalError(hls, data, videoElement) {
             console.error('Fatal other error, cannot recover:', data);
             // Fallback to MPEG-TS
             setTimeout(() => {
-                console.log('Falling back to MPEG-TS player');
+                debugLog('Falling back to MPEG-TS player');
                 hls.destroy();
                 initMPEGTSPlayer();
             }, 1000);
@@ -355,44 +417,44 @@ function handleFatalError(hls, data, videoElement) {
 }
 
 function handleNonFatalError(hls, data) {
-    console.warn('Non-fatal HLS error:', data.type, data.details);
+    debugWarn('Non-fatal HLS error:', data.type, data.details);
     
     // Log specific error details for debugging
     switch(data.details) {
         case Hls.ErrorDetails.MANIFEST_LOAD_ERROR:
         case Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT:
-            console.warn('Manifest loading issue - possibly no active stream');
+            debugWarn('Manifest loading issue - possibly no active stream');
             // Check if it's a 503 Service Unavailable (no stream active)
             if (data.response && data.response.code === 503) {
-                console.info('No active stream available. Waiting for stream to start...');
+                console.info('No active stream available. Waiting for stream to start...'); // Keep stream status visible
                 showNoStreamMessage();
             }
             break;
             
         case Hls.ErrorDetails.LEVEL_LOAD_ERROR:
         case Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT:
-            console.warn('Level loading issue');
+            debugWarn('Level loading issue');
             break;
             
         case Hls.ErrorDetails.FRAG_LOAD_ERROR:
         case Hls.ErrorDetails.FRAG_LOAD_TIMEOUT:
-            console.warn('Fragment loading issue');
+            debugWarn('Fragment loading issue');
             break;
             
         case Hls.ErrorDetails.BUFFER_APPEND_ERROR:
-            console.warn('Buffer append issue');
+            debugWarn('Buffer append issue');
             break;
             
         default:
-            console.warn('Other non-fatal error:', data.details);
+            debugWarn('Other non-fatal error:', data.details);
     }
 }
 
 // Utility functions for enhanced features
 function logAvailableQualities(levels) {
-    console.log('Available quality levels:');
+    debugLog('Available quality levels:');
     levels.forEach((level, index) => {
-        console.log(`  ${index}: ${level.width}x${level.height} @ ${Math.round(level.bitrate/1000)}kbps`);
+        debugLog(`  ${index}: ${level.width}x${level.height} @ ${Math.round(level.bitrate/1000)}kbps`);
     });
 }
 
@@ -415,7 +477,7 @@ function updateBufferIndicator() {
         const current = videoElement.currentTime;
         const bufferAhead = buffered - current;
         
-        console.debug(`Buffer: ${bufferAhead.toFixed(1)}s ahead`);
+        debugLog(`Buffer: ${bufferAhead.toFixed(1)}s ahead`);
         
         // Update buffer indicator in UI
         const indicator = document.querySelector('#bufferIndicator');
@@ -481,7 +543,7 @@ function addQualityControls(hls) {
         qualitySelect.addEventListener('change', (e) => {
             const selectedLevel = parseInt(e.target.value);
             hls.currentLevel = selectedLevel;
-            console.log('Manual quality change to:', selectedLevel === -1 ? 'auto' : selectedLevel);
+            debugLog('Manual quality change to:', selectedLevel === -1 ? 'auto' : selectedLevel);
         });
         
         videoWrapper.appendChild(qualitySelect);
@@ -502,11 +564,11 @@ function addBufferMonitoring(hls, videoElement) {
 
 function initMPEGTSPlayer() {
     if (!mpegts.isSupported()) {
-        console.warn('mpegts not supported');
+        console.warn('mpegts not supported'); // Keep compatibility warnings visible
         return;
     }
     
-    console.log('Initializing MPEG-TS player');
+    debugLog('Initializing MPEG-TS player');
 
     let videoElement = document.querySelector('#videoElement');
     let flvPlayer = mpegts.createPlayer({
@@ -537,7 +599,7 @@ function setupVideoOverlay() {
             if (videoElement) {
                 videoElement.muted = false;
                 videoElement.play().catch(e => {
-                    console.warn('Manual play failed:', e);
+                    debugWarn('Manual play failed:', e);
                 });
             }
         };
@@ -547,12 +609,12 @@ function setupVideoOverlay() {
 // Cleanup function for page unload
 function cleanup() {
     if (window.hlsPlayer) {
-        console.log('Cleaning up HLS player');
+        debugLog('Cleaning up HLS player');
         window.hlsPlayer.destroy();
         window.hlsPlayer = null;
     }
     if (window.flvPlayer) {
-        console.log('Cleaning up FLV player');
+        debugLog('Cleaning up FLV player');
         window.flvPlayer.destroy();
         window.flvPlayer = null;
     }
@@ -569,7 +631,7 @@ function collectPlaybackStats() {
             nextLevel: window.hlsPlayer.nextLevel,
             bufferLength: window.hlsPlayer.bufferLength
         };
-        console.log('HLS Stats:', stats);
+        debugLog('HLS Stats:', stats);
         return stats;
     }
     return null;

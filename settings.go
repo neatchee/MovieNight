@@ -59,6 +59,12 @@ type Settings struct {
 	// Send the NoCache header?
 	NoCache bool
 
+	// Enable verbose debug logging for HLS streaming operations
+	// This controls server-side debug output for HLS segment generation,
+	// playlist management, and streaming protocol details.
+	// Note: Client-side debug logging is controlled separately via browser sessionStorage
+	HLSDebugLogging bool
+
 	lock sync.RWMutex
 }
 

@@ -219,7 +219,7 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 		config:          config,
 	}
 
-	common.LogDebugf("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n", 
+	common.LogInfof("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n", 
 		capabilities.IsIOS, capabilities.IsMobile, config.BitrateReduction)
 
 	return hls, nil
@@ -306,7 +306,9 @@ func (h *HLSChannel) generateSegments() {
 
 			// Check if segment is getting too large (fallback protection)
 			if currentSegmentBuffer.Len() > 2*1024*1024 { // 2MB limit
-				common.LogDebugf("Segment size limit reached, creating segment\n")
+		if settings != nil && settings.HLSDebugLogging {
+			common.LogDebugf("Segment size limit reached, creating segment\n")
+		}
 				h.finalizeSegment(&currentSegmentBuffer, time.Since(segmentStartTime))
 				h.startNewSegment(&currentSegmentBuffer, &tsMuxer, &segmentStartTime)
 			}
@@ -336,17 +338,23 @@ func (h *HLSChannel) startNewSegment(buffer *bytes.Buffer, muxer **ts.Muxer, sta
 					common.LogErrorf("Failed to write stream headers to TS muxer: %v\n", err)
 					// Fall back to creating muxer without headers, but this may cause issues
 				} else {
+					if settings != nil && settings.HLSDebugLogging {
 					common.LogDebugf("TS muxer initialized with %d streams\n", len(streams))
 				}
+				}
 			} else {
+			if settings != nil && settings.HLSDebugLogging {
 				common.LogDebugf("No streams available for TS muxer initialization\n")
+			}
 			}
 		}
 	}
 	
 	*muxer = newMuxer
 	
-	common.LogDebugf("Started new HLS segment\n")
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("Started new HLS segment\n")
+	}
 }
 
 // finalizeSegment completes the current segment and adds it to the playlist
@@ -377,8 +385,10 @@ func (h *HLSChannel) finalizeSegment(buffer *bytes.Buffer, duration time.Duratio
 	// Add segment with proper sliding window management
 	h.addGeneratedSegment(segment)
 	
-	common.LogDebugf("Finalized HLS segment %d with %d bytes, duration %.2fs\n", 
-		currentSeq, len(segmentData), durationSeconds)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("Finalized HLS segment %d with %d bytes, duration %.2fs\n", 
+			currentSeq, len(segmentData), durationSeconds)
+	}
 }
 
 // createSegment creates a new HLS segment
@@ -449,8 +459,10 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.playlist.TargetDuration = uint(segment.Duration)
 	}
 
-	common.LogDebugf("Added generated HLS segment %d with duration %.2fs (playlist count: %d/%d)\n", 
-		segment.Sequence, segment.Duration, h.playlist.Count(), h.maxSegments)
+	if settings != nil && settings.HLSDebugLogging {
+		common.LogDebugf("Added generated HLS segment %d with duration %.2fs (playlist count: %d/%d)\n", 
+			segment.Sequence, segment.Duration, h.playlist.Count(), h.maxSegments)
+	}
 }
 
 // GetPlaylist returns the current m3u8 playlist

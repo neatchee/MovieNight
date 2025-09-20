@@ -8,6 +8,7 @@
 	"LogLevel": "debug",
 	"MaxMessageCount": 300,
 	"NoCache": false,
+	"HLSDebugLogging": false,
 	"PageTitle": "Movie Night",
 	"RateLimitAuth": 5,
 	"RateLimitChat": 1,
