@@ -102,10 +102,13 @@ function supportsHLS() {
     }
     
     // Fallback to feature detection only if User Agent doesn't give clear answer
+    // Gracefully handle browsers that don't support HLS
     try {
-        var video = document.createElement('video');
+        const video = document.createElement('video');
         return video.canPlayType('application/vnd.apple.mpegurl') !== '';
     } catch (e) {
+        // Silently handle the error - this is expected for browsers without HLS support
+        // No need to log since we have a fallback strategy
         return false;
     }
 }
@@ -227,12 +230,12 @@ function initHLSWithLibrary(videoElement, hlsSource) {
     }
     
     // Check if debug mode is enabled
-    const isDebugEnabled = debugEnabled();
+    const debugModeEnabled = isDebugEnabled();
     
     // Modern HLS.js configuration using policy-based approach (v1.6.12+)
     const hlsConfig = {
         // Core settings - only use well-supported options
-        debug: isDebugEnabled,              // Enable debug only when explicitly requested
+        debug: debugModeEnabled,               // Enable debug only when explicitly requested
         enableWorker: true,                 // Enable worker for better performance
         lowLatencyMode: true,               // Enable low latency mode
         
