@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net/http"
@@ -361,14 +362,16 @@ func (h *HLSChannel) finalizeSegment(buffer *bytes.Buffer, duration time.Duratio
 	currentSeq := h.sequenceNumber
 	h.sequenceNumber++
 
-	segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
+	// Generate unique segment ID to avoid browser caching issues across service restarts
+	segmentID := generateSegmentID()
+	segmentURI := fmt.Sprintf("/live/segment_%s.ts", segmentID)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
 		URI:      segmentURI,
 		Duration: durationSeconds,
 		Data:     segmentData,
-		Sequence: currentSeq,
+		Sequence: currentSeq, // Keep sequence for internal ordering
 	}
 
 	// Add segment with proper sliding window management
@@ -549,6 +552,27 @@ func (h *HLSChannel) GetViewerCount() int {
 	return len(h.viewers)
 }
 
+// generateSegmentID creates a unique segment identifier to avoid browser caching issues
+// Uses UUID4 format for maximum collision avoidance across service restarts
+func generateSegmentID() string {
+	// Generate 16 random bytes for UUID4
+	uuid := make([]byte, 16)
+	_, err := rand.Read(uuid)
+	if err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	
+	// Set version (4) and variant bits for proper UUID4 format
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant 10
+	
+	// Format as UUID string (shortened for segment names)
+	return fmt.Sprintf("%x%x%x%x%x%x%x%x",
+		uuid[0:2], uuid[2:4], uuid[4:6], uuid[6:8],
+		uuid[8:10], uuid[10:12], uuid[12:14], uuid[14:16])
+}
+
 // IsValidSegmentURI checks if a segment URI is valid
 func IsValidSegmentURI(uri string) bool {
 	if uri == "" {
@@ -572,19 +596,36 @@ func IsValidSegmentURI(uri string) bool {
 		return false
 	}
 
-	// Extract sequence number and validate
+	// Extract identifier and validate
 	name := strings.TrimSuffix(filename, ".ts")
 	parts := strings.Split(name, "_")
 	if len(parts) != 2 {
 		return false
 	}
 
-	// Check if the sequence number is valid
-	_, err := strconv.ParseUint(parts[1], 10, 64)
-	return err == nil
+	identifier := parts[1]
+	
+	// Support both old numeric format (for backward compatibility) and new UUID format
+	if _, err := strconv.ParseUint(identifier, 10, 64); err == nil {
+		// Valid numeric sequence (legacy format)
+		return true
+	}
+	
+	// Check for UUID format: 32 hex characters
+	if len(identifier) == 32 {
+		for _, c := range identifier {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+	
+	return false
 }
 
 // ParseSequenceFromURI extracts sequence number from segment URI
+// Note: This function is deprecated for UUID-based segments and maintained for backward compatibility
 func ParseSequenceFromURI(uri string) (uint64, error) {
 	if !IsValidSegmentURI(uri) {
 		return 0, fmt.Errorf("invalid segment URI: %s", uri)
@@ -597,17 +638,20 @@ func ParseSequenceFromURI(uri string) (uint64, error) {
 		filename = parts[len(parts)-1]
 	}
 
-	// Extract sequence number from "segment_N.ts"
+	// Extract identifier from "segment_IDENTIFIER.ts"
 	name := strings.TrimSuffix(filename, ".ts")
 	parts := strings.Split(name, "_")
 	if len(parts) != 2 {
 		return 0, fmt.Errorf("invalid segment URI format: %s", uri)
 	}
 
-	sequence, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid sequence number in URI %s: %w", uri, err)
+	identifier := parts[1]
+	
+	// Try to parse as numeric sequence (legacy format)
+	if sequence, err := strconv.ParseUint(identifier, 10, 64); err == nil {
+		return sequence, nil
 	}
-
-	return sequence, nil
+	
+	// For UUID-based segments, sequence number is not available from URI
+	return 0, fmt.Errorf("sequence number not available for UUID-based segment URI: %s", uri)
 }

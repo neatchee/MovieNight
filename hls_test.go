@@ -126,12 +126,20 @@ func TestIsValidSegmentURI(t *testing.T) {
 		uri      string
 		expected bool
 	}{
+		// Legacy numeric format (backward compatibility)
 		{"segment_0.ts", true},
 		{"segment_123.ts", true},
 		{"segment_999999.ts", true},
 		{"/live/segment_0.ts", true},
 		{"/live/segment_123.ts", true},
 		{"/hls/stream/segment_999.ts", true},
+		
+		// New UUID format
+		{"segment_a1b2c3d4e5f6789012345678abcdef90.ts", true},
+		{"/live/segment_1234567890abcdef1234567890abcdef.ts", true},
+		{"segment_ABCDEF1234567890abcdef1234567890.ts", true},
+		
+		// Invalid formats
 		{"invalid.ts", false},
 		{"segment_0.mp4", false},
 		{"", false},
@@ -139,6 +147,8 @@ func TestIsValidSegmentURI(t *testing.T) {
 		{"_0.ts", false},
 		{"/live/invalid.ts", false},
 		{"/live/segment_.ts", false},
+		{"segment_invalid_uuid.ts", false}, // Invalid UUID length
+		{"segment_xyz123.ts", false}, // Invalid hex characters
 	}
 
 	for _, tt := range tests {
@@ -155,12 +165,19 @@ func TestParseSequenceFromURI(t *testing.T) {
 		expectedSeq   uint64
 		expectedError bool
 	}{
+		// Legacy numeric format (still supported)
 		{"segment_0.ts", 0, false},
 		{"segment_123.ts", 123, false},
 		{"segment_999999.ts", 999999, false},
 		{"/live/segment_0.ts", 0, false},
 		{"/live/segment_123.ts", 123, false},
 		{"/hls/stream/segment_999.ts", 999, false},
+		
+		// UUID format (should return error as sequence not available)
+		{"segment_a1b2c3d4e5f6789012345678abcdef90.ts", 0, true},
+		{"/live/segment_1234567890abcdef1234567890abcdef.ts", 0, true},
+		
+		// Invalid formats
 		{"invalid.ts", 0, true},
 		{"segment_.ts", 0, true},
 		{"", 0, true},
@@ -180,6 +197,29 @@ func TestParseSequenceFromURI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGenerateSegmentID(t *testing.T) {
+	// Test that generateSegmentID produces valid UUID format
+	id1 := generateSegmentID()
+	id2 := generateSegmentID()
+	
+	// Should be 32 hex characters
+	assert.Len(t, id1, 32)
+	assert.Len(t, id2, 32)
+	
+	// Should be different each time
+	assert.NotEqual(t, id1, id2)
+	
+	// Should contain only hex characters
+	for _, c := range id1 {
+		assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), 
+			"ID should contain only hex characters, got: %c", c)
+	}
+	
+	// Test that generated IDs create valid segment URIs
+	uri := fmt.Sprintf("/live/segment_%s.ts", id1)
+	assert.True(t, IsValidSegmentURI(uri))
 }
 
 func TestNewHLSChannel(t *testing.T) {
