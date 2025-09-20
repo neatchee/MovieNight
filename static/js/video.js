@@ -202,10 +202,37 @@ function initHLSPlayer() {
 function initHLSWithLibrary(videoElement, hlsSource) {
     debugLog('Initializing HLS.js with source:', hlsSource);
     
+    // Clean up any existing HLS instance first
+    if (window.hlsPlayer) {
+        debugLog('Cleaning up existing HLS instance');
+        try {
+            window.hlsPlayer.destroy();
+        } catch (e) {
+            debugWarn('Error destroying previous HLS instance:', e);
+        }
+        window.hlsPlayer = null;
+    }
+    
+    // Clear video element state to prevent cache-related issues
+    try {
+        videoElement.pause();
+        videoElement.removeAttribute('src');
+        videoElement.load();
+        // Clear any existing source buffers
+        if (videoElement.srcObject) {
+            videoElement.srcObject = null;
+        }
+    } catch (e) {
+        debugWarn('Error clearing video element state:', e);
+    }
+    
+    // Check if debug mode is enabled
+    const isDebugEnabled = debugEnabled();
+    
     // Modern HLS.js configuration using policy-based approach (v1.6.12+)
     const hlsConfig = {
         // Core settings - only use well-supported options
-        debug: true,                        // Enable debug for troubleshooting
+        debug: isDebugEnabled,              // Enable debug only when explicitly requested
         enableWorker: true,                 // Enable worker for better performance
         lowLatencyMode: true,               // Enable low latency mode
         
@@ -288,14 +315,16 @@ function initHLSWithLibrary(videoElement, hlsSource) {
         // Fallback to minimal configuration
         try {
             hls = new Hls({
-                debug: true,
+                debug: isDebugEnabled,
                 lowLatencyMode: true,
                 autoStartLoad: true
             });
         } catch (e2) {
             console.error('Failed to create HLS with minimal config, trying default:', e2); // Keep error always visible
             // Last resort - use completely default configuration
-            hls = new Hls();
+            hls = new Hls({
+                debug: isDebugEnabled
+            });
         }
     }
     
@@ -385,17 +414,30 @@ function handleFatalError(hls, data, videoElement) {
     switch(data.type) {
         case Hls.ErrorTypes.NETWORK_ERROR:
             console.log('Fatal network error, attempting recovery...'); // Keep recovery attempts visible
-            hls.startLoad();
+            // For network errors, try standard recovery first
+            try {
+                hls.startLoad();
+            } catch (e) {
+                debugWarn('Standard recovery failed, trying full restart');
+                recoverHLSPlayer();
+            }
             break;
             
         case Hls.ErrorTypes.MEDIA_ERROR:
             console.log('Fatal media error, attempting recovery...'); // Keep recovery attempts visible
-            hls.recoverMediaError();
+            // For media errors, especially buffer-related issues, try media recovery
+            try {
+                hls.recoverMediaError();
+            } catch (e) {
+                debugWarn('Media recovery failed, trying full restart');
+                recoverHLSPlayer();
+            }
             break;
             
         case Hls.ErrorTypes.MUX_ERROR:
-            console.log('Fatal mux error, attempting media recovery...'); // Keep recovery attempts visible
-            hls.recoverMediaError();
+            console.log('Fatal mux error - likely cache-related, restarting player...'); // Keep recovery attempts visible
+            // Mux errors often indicate cached/stale content, restart completely
+            recoverHLSPlayer();
             break;
             
         case Hls.ErrorTypes.OTHER_ERROR:
@@ -403,7 +445,7 @@ function handleFatalError(hls, data, videoElement) {
             // Fallback to MPEG-TS
             setTimeout(() => {
                 debugLog('Falling back to MPEG-TS player');
-                hls.destroy();
+                cleanup();
                 initMPEGTSPlayer();
             }, 1000);
             break;
@@ -442,7 +484,34 @@ function handleNonFatalError(hls, data) {
             break;
             
         case Hls.ErrorDetails.BUFFER_APPEND_ERROR:
-            debugWarn('Buffer append issue');
+            debugWarn('Buffer append issue - attempting buffer flush');
+            // Try to recover from buffer append errors by flushing buffers
+            if (window.hlsPlayer && window.hlsPlayer.media) {
+                try {
+                    window.hlsPlayer.trigger(Hls.Events.BUFFER_FLUSHED);
+                } catch (e) {
+                    debugWarn('Error flushing buffer:', e);
+                }
+            }
+            break;
+            
+        case Hls.ErrorDetails.BUFFER_FULL_ERROR:
+            debugWarn('Buffer full error - forcing buffer cleanup');
+            // Handle buffer full errors more aggressively
+            if (window.hlsPlayer) {
+                try {
+                    // Try to flush all buffers and restart
+                    const videoElement = window.hlsPlayer.media;
+                    if (videoElement) {
+                        const currentTime = videoElement.currentTime;
+                        window.hlsPlayer.trigger(Hls.Events.BUFFER_FLUSHED);
+                        // Seek to current position to force buffer refresh
+                        videoElement.currentTime = currentTime;
+                    }
+                } catch (e) {
+                    debugWarn('Error handling buffer full:', e);
+                }
+            }
             break;
             
         default:
@@ -610,14 +679,41 @@ function setupVideoOverlay() {
 function cleanup() {
     if (window.hlsPlayer) {
         debugLog('Cleaning up HLS player');
-        window.hlsPlayer.destroy();
+        try {
+            window.hlsPlayer.destroy();
+        } catch (e) {
+            debugWarn('Error destroying HLS player:', e);
+        }
         window.hlsPlayer = null;
     }
     if (window.flvPlayer) {
         debugLog('Cleaning up FLV player');
-        window.flvPlayer.destroy();
+        try {
+            window.flvPlayer.destroy();
+        } catch (e) {
+            debugWarn('Error destroying FLV player:', e);
+        }
         window.flvPlayer = null;
     }
+}
+
+// Recovery function for severe HLS issues
+function recoverHLSPlayer() {
+    debugLog('Attempting HLS player recovery');
+    const videoElement = document.querySelector('#videoElement');
+    if (!videoElement) return;
+    
+    // Get current source URL
+    const currentSource = window.hlsPlayer?.url || '/live?format=hls';
+    
+    // Cleanup existing player
+    cleanup();
+    
+    // Wait a moment then reinitialize
+    setTimeout(() => {
+        debugLog('Reinitializing HLS player after recovery');
+        initHLSWithLibrary(videoElement, currentSource);
+    }, 1000);
 }
 
 // Enhanced statistics collection

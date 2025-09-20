@@ -658,7 +658,9 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChanne
 
 	w.Header().Set("Content-Type", GetContentTypeForFormat("ts"))
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache segments for 1 year
+	// Use shorter cache time for live segments to prevent stale content issues
+	// Long cache (1 year) can cause problems when service restarts with different content
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache segments for 1 hour instead of 1 year
 	w.Header().Set("Content-Length", strconv.Itoa(len(segmentData)))
 
 	w.WriteHeader(200)
