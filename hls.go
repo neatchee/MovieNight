@@ -415,13 +415,36 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.segments = h.segments[excess:]
 	}
 
-	// Use the correct Slide method for sliding window implementation
-	// According to the feedback, we need to use Slide() instead of Append() for sliding windows
-	err := h.playlist.Slide(segment.URI, segment.Duration, "")
-	if err != nil {
-		common.LogErrorf("Failed to slide segment into playlist: %v\n", err)
-		return
+	// For proper sliding window, we need to manually manage the playlist size
+	// If the playlist is at max capacity, we need to remove the oldest segment first
+	if int(h.playlist.Count()) >= h.maxSegments {
+		// Create a new playlist and copy the recent segments
+		newPlaylist, err := m3u8.NewMediaPlaylist(uint(h.maxSegments), uint(h.maxSegments))
+		if err != nil {
+			common.LogErrorf("Failed to create new playlist for sliding window: %v\n", err)
+			return
+		}
+		newPlaylist.SetVersion(6)
+		newPlaylist.Closed = false
+		
+		// Add only the segments that should remain (excluding the oldest one)
+		segmentsToKeep := h.maxSegments - 1 // Leave room for the new segment
+		startIdx := len(h.segments) - segmentsToKeep
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		
+		for i := startIdx; i < len(h.segments)-1; i++ { // -1 because we haven't added the new segment yet
+			seg := h.segments[i]
+			newPlaylist.Append(seg.URI, seg.Duration, "")
+		}
+		
+		// Replace the old playlist
+		h.playlist = newPlaylist
 	}
+	
+	// Now add the new segment
+	h.playlist.Append(segment.URI, segment.Duration, "")
 
 	// Update target duration if needed
 	duration := time.Duration(segment.Duration * float64(time.Second))

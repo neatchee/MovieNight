@@ -10,7 +10,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/nareix/joy4 v0.0.0-20200507095837-05a4ffbb5369
 	github.com/playwright-community/playwright-go v0.2000.1
-	github.com/stretchr/testify v1.7.1
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/exp v0.0.0-20221126150942-6ab00d035af9
 )
 
