@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 type streamStats struct {

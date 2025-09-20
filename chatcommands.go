@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 type CommandControl struct {
