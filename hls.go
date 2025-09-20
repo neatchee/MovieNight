@@ -320,6 +320,29 @@ func (h *HLSChannel) startNewSegment(buffer *bytes.Buffer, muxer **ts.Muxer, sta
 	
 	// Create new TS muxer that writes to our buffer
 	newMuxer := ts.NewMuxer(buffer)
+	
+	// Get the streams from the original queue to initialize the muxer
+	if h.que != nil {
+		// Get stream headers from the queue
+		cursor := h.que.Latest()
+		if cursor != nil {
+			// Try to get the stream headers that were written to the queue
+			streams, err := cursor.Streams()
+			if err == nil && streams != nil && len(streams) > 0 {
+				// Write stream headers to the TS muxer
+				err := newMuxer.WriteHeader(streams)
+				if err != nil {
+					common.LogErrorf("Failed to write stream headers to TS muxer: %v\n", err)
+					// Fall back to creating muxer without headers, but this may cause issues
+				} else {
+					common.LogDebugf("TS muxer initialized with %d streams\n", len(streams))
+				}
+			} else {
+				common.LogDebugf("No streams available for TS muxer initialization\n")
+			}
+		}
+	}
+	
 	*muxer = newMuxer
 	
 	common.LogDebugf("Started new HLS segment\n")
