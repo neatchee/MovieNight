@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 	"golang.org/x/exp/slices"
 )
 

@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 var (

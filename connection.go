@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 type chatConnection struct {

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 func TestClient_addSpoilerTag(t *testing.T) {

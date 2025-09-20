@@ -15,7 +15,7 @@ import (
 	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format/ts"
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 // HLSConfig represents configuration for HLS streaming

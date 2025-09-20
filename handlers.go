@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 
 	"github.com/gorilla/websocket"
 	"github.com/nareix/joy4/av/avutil"

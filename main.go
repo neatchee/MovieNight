@@ -15,8 +15,8 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/nareix/joy4/format"
 	"github.com/nareix/joy4/format/rtmp"
-	"github.com/zorchenhimer/MovieNight/common"
-	"github.com/zorchenhimer/MovieNight/files"
+	"github.com/neatchee/MovieNight/common"
+	"github.com/neatchee/MovieNight/files"
 )
 
 //go:embed static/*.html static/css static/img static/js

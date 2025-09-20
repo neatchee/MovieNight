@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 var settings *Settings

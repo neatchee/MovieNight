@@ -9,7 +9,7 @@ import (
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zorchenhimer/MovieNight/common"
+	"github.com/neatchee/MovieNight/common"
 )
 
 func TestDetectDeviceCapabilities(t *testing.T) {
