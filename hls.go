@@ -398,6 +398,11 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.segments = h.segments[excess:]
 	}
 
+	// If this is the first segment, set the initial MediaSequence
+	if h.playlist.Count() == 0 {
+		h.playlist.SeqNo = segment.Sequence
+	}
+
 	// For proper sliding window, we need to manually manage the playlist size
 	// If the playlist is at max capacity, we need to remove the oldest segment first
 	if int(h.playlist.Count()) >= h.maxSegments {
@@ -415,6 +420,11 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		startIdx := len(h.segments) - segmentsToKeep
 		if startIdx < 0 {
 			startIdx = 0
+		}
+		
+		// Set the media sequence to match the first segment that will be in the new playlist
+		if startIdx < len(h.segments) {
+			newPlaylist.SeqNo = h.segments[startIdx].Sequence
 		}
 		
 		for i := startIdx; i < len(h.segments)-1; i++ { // -1 because we haven't added the new segment yet
