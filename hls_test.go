@@ -128,11 +128,16 @@ func TestIsValidSegmentURI(t *testing.T) {
 		{"segment_0.ts", true},
 		{"segment_123.ts", true},
 		{"segment_999999.ts", true},
+		{"/live/segment_0.ts", true},
+		{"/live/segment_123.ts", true},
+		{"/hls/stream/segment_999.ts", true},
 		{"invalid.ts", false},
 		{"segment_0.mp4", false},
 		{"", false},
 		{"segment_.ts", false},
 		{"_0.ts", false},
+		{"/live/invalid.ts", false},
+		{"/live/segment_.ts", false},
 	}
 
 	for _, tt := range tests {
@@ -152,10 +157,14 @@ func TestParseSequenceFromURI(t *testing.T) {
 		{"segment_0.ts", 0, false},
 		{"segment_123.ts", 123, false},
 		{"segment_999999.ts", 999999, false},
+		{"/live/segment_0.ts", 0, false},
+		{"/live/segment_123.ts", 123, false},
+		{"/hls/stream/segment_999.ts", 999, false},
 		{"invalid.ts", 0, true},
 		{"segment_.ts", 0, true},
 		{"", 0, true},
 		{"segment_abc.ts", 0, true},
+		{"/live/invalid.ts", 0, true},
 	}
 
 	for _, tt := range tests {

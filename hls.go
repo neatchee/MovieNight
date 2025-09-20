@@ -332,7 +332,7 @@ func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
 	currentSeq := h.sequenceNumber
 	h.sequenceNumber++ // Increment for next segment
 	
-	segmentURI := fmt.Sprintf("segment_%d.ts", currentSeq)
+	segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
@@ -563,12 +563,24 @@ func IsValidSegmentURI(uri string) bool {
 	}
 	
 	// Check if it's a .ts segment
-	if !strings.HasSuffix(uri, ".ts") || !strings.HasPrefix(uri, "segment_") {
+	if !strings.HasSuffix(uri, ".ts") {
+		return false
+	}
+	
+	// Extract the filename from the URI (handle both relative and absolute paths)
+	filename := uri
+	if strings.Contains(uri, "/") {
+		parts := strings.Split(uri, "/")
+		filename = parts[len(parts)-1]
+	}
+	
+	// Check if filename matches segment pattern
+	if !strings.HasPrefix(filename, "segment_") {
 		return false
 	}
 
 	// Extract sequence number and validate
-	name := strings.TrimSuffix(uri, ".ts")
+	name := strings.TrimSuffix(filename, ".ts")
 	parts := strings.Split(name, "_")
 	if len(parts) != 2 {
 		return false
@@ -585,8 +597,15 @@ func ParseSequenceFromURI(uri string) (uint64, error) {
 		return 0, fmt.Errorf("invalid segment URI: %s", uri)
 	}
 
+	// Extract the filename from the URI (handle both relative and absolute paths)
+	filename := uri
+	if strings.Contains(uri, "/") {
+		parts := strings.Split(uri, "/")
+		filename = parts[len(parts)-1]
+	}
+
 	// Extract sequence number from "segment_N.ts"
-	name := strings.TrimSuffix(uri, ".ts")
+	name := strings.TrimSuffix(filename, ".ts")
 	parts := strings.Split(name, "_")
 	if len(parts) != 2 {
 		return 0, fmt.Errorf("invalid segment URI format: %s", uri)
