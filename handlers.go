@@ -621,8 +621,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 	if session != nil {
 		hlsChan.AddViewer(session.ID)
 		stats.addViewer(session.ID)
-		// Note: removeViewer is called when connection closes or errors
-		// This differs from FLV which can track the entire connection lifecycle
 	}
 
 	w.WriteHeader(200)
@@ -667,9 +665,6 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChanne
 
 	w.WriteHeader(200)
 	w.Write(segmentData)
-	
-	// Note: For HLS segments, viewer tracking is done at the playlist level
-	// rather than per-segment to avoid inflating viewer counts
 }
 
 func handleHLS(w http.ResponseWriter, r *http.Request) {
