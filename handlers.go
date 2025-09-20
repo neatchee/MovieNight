@@ -616,14 +616,18 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, hlsChan *HLSChanne
 		return
 	}
 
-	// Extract segment URI from path
+	// Extract segment filename from path
 	pathParts := strings.Split(r.URL.Path, "/")
-	segmentURI := pathParts[len(pathParts)-1]
+	segmentFilename := pathParts[len(pathParts)-1]
 
-	if !IsValidSegmentURI(segmentURI) {
+	if !IsValidSegmentURI(segmentFilename) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
+	// Reconstruct the full URI that was used when storing the segment
+	// The segment was stored with the full absolute path like "/live/segment_N.ts"
+	segmentURI := r.URL.Path
 
 	segmentData, err := hlsChan.GetSegmentByURI(segmentURI)
 	if err != nil {
