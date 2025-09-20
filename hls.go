@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Eyevinn/hls-m3u8/m3u8"
 	"github.com/nareix/joy4/av/pubsub"
+	"github.com/nareix/joy4/format/ts"
 	"github.com/zorchenhimer/MovieNight/common"
 )
 
@@ -241,7 +243,7 @@ func (h *HLSChannel) Stop() {
 	}
 }
 
-// generateSegments continuously generates HLS segments from the stream
+// generateSegments continuously generates HLS segments from the stream using proper TS muxing
 func (h *HLSChannel) generateSegments() {
 	if h == nil || h.que == nil {
 		common.LogErrorln("Cannot generate segments: HLS channel or queue is nil")
@@ -254,148 +256,106 @@ func (h *HLSChannel) generateSegments() {
 		return
 	}
 
-	segmentBuffer := make([]byte, 0, 1024*1024) // 1MB initial buffer
-	segmentStartTime := time.Now()
-	lastDataTime := time.Now()
+	// Create segments at regular intervals using TS muxer
+	segmentTimer := time.NewTicker(h.segmentDuration)
+	defer segmentTimer.Stop()
+
+	var currentSegmentBuffer bytes.Buffer
+	var segmentStartTime time.Time
+	var tsMuxer *ts.Muxer
+
+	// Initialize first segment
+	h.startNewSegment(&currentSegmentBuffer, &tsMuxer, &segmentStartTime)
 
 	for {
 		select {
 		case <-h.ctx.Done():
+			// Finalize any pending segment before exiting
+			if currentSegmentBuffer.Len() > 0 {
+				h.finalizeSegment(&currentSegmentBuffer, time.Since(segmentStartTime))
+			}
 			return
+
+		case <-segmentTimer.C:
+			// Time-based segmentation - create segment every interval
+			if currentSegmentBuffer.Len() > 0 {
+				h.finalizeSegment(&currentSegmentBuffer, time.Since(segmentStartTime))
+				h.startNewSegment(&currentSegmentBuffer, &tsMuxer, &segmentStartTime)
+			}
+
 		default:
-			// Read data from the stream and buffer it
+			// Read and process stream data
 			packet, err := cursor.ReadPacket()
 			if err != nil {
 				if err != io.EOF {
 					common.LogErrorf("Error reading from stream cursor: %v\n", err)
 				}
-				
-				// If we haven't seen data in a while but have some buffered, create a segment
-				timeSinceData := time.Since(lastDataTime)
-				if len(segmentBuffer) > 0 && timeSinceData > 5*time.Second {
-					common.LogDebugf("Creating segment due to timeout with %d bytes\n", len(segmentBuffer))
-					h.createSegment(segmentBuffer, time.Since(segmentStartTime))
-					segmentBuffer = segmentBuffer[:0]
-					segmentStartTime = time.Now()
-				}
-				
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
-			lastDataTime = time.Now()
-			
-			// Convert packet to bytes for buffering
-			packetData := packet.Data
-			if packetData != nil {
-				segmentBuffer = append(segmentBuffer, packetData...)
+			// Write packet to current segment via TS muxer
+			if tsMuxer != nil {
+				err = tsMuxer.WritePacket(packet)
+				if err != nil {
+					common.LogErrorf("Error writing packet to TS muxer: %v\n", err)
+					continue
+				}
 			}
 
-			// Check if we should create a new segment
-			// Use smaller buffer sizes and prefer time-based segmentation for low latency
-			elapsed := time.Since(segmentStartTime)
-			bufferSize := len(segmentBuffer)
-			
-			// Create segment if we hit time limit OR if buffer gets reasonably sized
-			// Prioritize time-based segmentation for lower latency
-			shouldCreateSegment := elapsed >= h.segmentDuration || 
-							  (bufferSize > 512*1024 && elapsed >= h.segmentDuration/2) ||
-							  bufferSize > 1024*1024 // Fallback for large buffers
-							  
-			if shouldCreateSegment && bufferSize > 0 {
-				h.createSegment(segmentBuffer, time.Since(segmentStartTime))
-				segmentBuffer = segmentBuffer[:0] // Reset buffer
-				segmentStartTime = time.Now()
+			// Check if segment is getting too large (fallback protection)
+			if currentSegmentBuffer.Len() > 2*1024*1024 { // 2MB limit
+				common.LogDebugf("Segment size limit reached, creating segment\n")
+				h.finalizeSegment(&currentSegmentBuffer, time.Since(segmentStartTime))
+				h.startNewSegment(&currentSegmentBuffer, &tsMuxer, &segmentStartTime)
 			}
 		}
 	}
 }
 
-// createSegment creates a new HLS segment
-func (h *HLSChannel) createSegment(data []byte, duration time.Duration) {
-	if h == nil {
-		common.LogErrorln("Cannot create segment: HLS channel is nil")
+// startNewSegment initializes a new segment with TS muxer
+func (h *HLSChannel) startNewSegment(buffer *bytes.Buffer, muxer **ts.Muxer, startTime *time.Time) {
+	buffer.Reset()
+	*startTime = time.Now()
+	
+	// Create new TS muxer that writes to our buffer
+	newMuxer := ts.NewMuxer(buffer)
+	*muxer = newMuxer
+	
+	common.LogDebugf("Started new HLS segment\n")
+}
+
+// finalizeSegment completes the current segment and adds it to the playlist
+func (h *HLSChannel) finalizeSegment(buffer *bytes.Buffer, duration time.Duration) {
+	if buffer.Len() == 0 {
 		return
 	}
 
-	if len(data) == 0 {
-		return // Skip empty segments
-	}
-
-	// Convert data to TS format
-	tsData, err := h.convertToTS(data)
-	if err != nil {
-		common.LogErrorf("Failed to convert segment to TS: %v\n", err)
-		return
-	}
+	// Create a copy of the buffer data
+	segmentData := make([]byte, buffer.Len())
+	copy(segmentData, buffer.Bytes())
 
 	currentSeq := h.sequenceNumber
-	h.sequenceNumber++ // Increment for next segment
-	
+	h.sequenceNumber++
+
 	segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
 	durationSeconds := duration.Seconds()
 
 	segment := HLSSegment{
 		URI:      segmentURI,
 		Duration: durationSeconds,
-		Data:     tsData,
+		Data:     segmentData,
 		Sequence: currentSeq,
 	}
 
 	// Add segment with proper sliding window management
 	h.addGeneratedSegment(segment)
-}
-
-// convertToTS converts raw data to MPEG-TS format
-func (h *HLSChannel) convertToTS(data []byte) ([]byte, error) {
-	if len(data) == 0 {
-		return nil, fmt.Errorf("no data to convert")
-	}
-
-	// Create a simple TS muxer
-	// Note: This is a simplified implementation
-	// In a production environment, you'd want more sophisticated TS muxing
 	
-	// Basic TS packet structure (simplified)
-	tsPacketSize := 188
-	headerSize := 4
-	payloadSize := tsPacketSize - headerSize
-
-	numPackets := (len(data) + payloadSize - 1) / payloadSize
-	tsData := make([]byte, 0, numPackets*tsPacketSize)
-
-	for i := 0; i < numPackets; i++ {
-		packet := make([]byte, tsPacketSize)
-		
-		// TS packet header
-		packet[0] = 0x47 // Sync byte
-		packet[1] = 0x00 // Transport Error Indicator, Payload Unit Start, Transport Priority, PID (high 5 bits)
-		packet[2] = 0x01 // PID (low 8 bits) - use PID 1 for video
-		packet[3] = 0x10 // Continuity counter and adaptation field control
-
-		// Copy payload data
-		start := i * payloadSize
-		end := start + payloadSize
-		if end > len(data) {
-			end = len(data)
-		}
-
-		if start < len(data) {
-			payloadLen := end - start
-			copy(packet[headerSize:headerSize+payloadLen], data[start:end])
-			
-			// Pad remaining bytes with 0xFF (null packets)
-			for j := headerSize + payloadLen; j < tsPacketSize; j++ {
-				packet[j] = 0xFF
-			}
-		}
-
-		tsData = append(tsData, packet...)
-	}
-
-	return tsData, nil
+	common.LogDebugf("Finalized HLS segment %d with %d bytes, duration %.2fs\n", 
+		currentSeq, len(segmentData), durationSeconds)
 }
 
+// createSegment creates a new HLS segment
 // addGeneratedSegment adds a generated segment to the HLS channel with proper sliding window
 func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 	if h == nil || h.playlist == nil {

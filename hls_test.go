@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -278,8 +279,22 @@ func TestHLSChannel_SlidingWindow(t *testing.T) {
 	
 	// Add segments one by one and verify sliding window behavior
 	for i := 0; i < 5; i++ {
-		// Create segment
-		hlsChan.createSegment(testData, 2*time.Second)
+		// Create segment manually for testing
+		currentSeq := hlsChan.sequenceNumber
+		hlsChan.sequenceNumber++
+		
+		segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
+		durationSeconds := 2.0
+
+		segment := HLSSegment{
+			URI:      segmentURI,
+			Duration: durationSeconds,
+			Data:     testData,
+			Sequence: currentSeq,
+		}
+
+		// Add segment with proper sliding window management
+		hlsChan.addGeneratedSegment(segment)
 		
 		// Check that we never exceed maxSegments in our local storage
 		hlsChan.mutex.RLock()
