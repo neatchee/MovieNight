@@ -3,7 +3,7 @@ package files_test
 import (
 	"testing"
 
-	"github.com/zorchenhimer/MovieNight/files"
+	"github.com/neatchee/MovieNight/files"
 )
 
 func TestFSNil(t *testing.T) {
