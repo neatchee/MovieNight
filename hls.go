@@ -91,6 +91,14 @@ func GetQualitySettings(capabilities DeviceCapabilities) HLSQualitySettings {
 	}
 }
 
+// HLSViewerInfo represents viewer session information with activity tracking
+type HLSViewerInfo struct {
+	SessionID    string
+	LastActivity time.Time
+	FirstSeen    time.Time
+	IsNew        bool // True if this is the first playlist request for this session
+}
+
 // HLSChannel represents an HLS stream with playlist and segments
 type HLSChannel struct {
 	que             *pubsub.Queue
@@ -103,9 +111,10 @@ type HLSChannel struct {
 	cancel          context.CancelFunc
 	segmentDuration time.Duration
 	maxSegments     int
-	viewers         map[string]int // Track HLS viewers
+	viewers         map[string]*HLSViewerInfo // Track HLS viewers with timestamps
 	viewersMutex    sync.RWMutex
 	config          HLSConfig
+	cleanupTicker   *time.Ticker // Background cleanup ticker
 }
 
 // HLSSegment represents a single HLS segment
@@ -149,9 +158,13 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 		cancel:          cancel,
 		segmentDuration: config.SegmentDuration,
 		maxSegments:     config.MaxSegments,
-		viewers:         make(map[string]int),
+		viewers:         make(map[string]*HLSViewerInfo),
 		config:          config,
+		cleanupTicker:   time.NewTicker(10 * time.Second), // Run cleanup every 10 seconds
 	}
+
+	// Start background cleanup routine
+	go hls.startViewerCleanup()
 
 	return hls, nil
 }
@@ -215,9 +228,13 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 		cancel:          cancel,
 		segmentDuration: config.SegmentDuration,
 		maxSegments:     config.MaxSegments,
-		viewers:         make(map[string]int),
+		viewers:         make(map[string]*HLSViewerInfo),
 		config:          config,
+		cleanupTicker:   time.NewTicker(10 * time.Second), // Run cleanup every 10 seconds
 	}
+
+	// Start background cleanup routine
+	go hls.startViewerCleanup()
 
 	common.LogDebugf("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n",
 		capabilities.IsIOS, capabilities.IsMobile, config.BitrateReduction)
@@ -237,11 +254,7 @@ func (h *HLSChannel) Start() error {
 
 // Stop stops HLS segment generation
 func (h *HLSChannel) Stop() {
-	if h != nil {
-		if h.cancel != nil {
-			h.cancel()
-		}
-	}
+	h.Close()
 }
 
 // generateSegments continuously generates HLS segments from the stream using proper TS muxing
@@ -516,16 +529,35 @@ func (h *HLSChannel) GetSegmentByURI(uri string) ([]byte, error) {
 	return nil, fmt.Errorf("segment with URI %s not found", uri)
 }
 
-// AddViewer adds an HLS viewer for tracking
-func (h *HLSChannel) AddViewer(sessionID string) {
+// AddViewer adds an HLS viewer for tracking, returns true if this is a new viewer
+func (h *HLSChannel) AddViewer(sessionID string) bool {
 	if h == nil {
-		return
+		return false
 	}
 
 	h.viewersMutex.Lock()
 	defer h.viewersMutex.Unlock()
 
-	h.viewers[sessionID] = 1
+	now := time.Now()
+	isNew := false
+
+	if existing, exists := h.viewers[sessionID]; exists {
+		// Update last activity for existing viewer
+		existing.LastActivity = now
+		existing.IsNew = false
+	} else {
+		// New viewer
+		h.viewers[sessionID] = &HLSViewerInfo{
+			SessionID:    sessionID,
+			LastActivity: now,
+			FirstSeen:    now,
+			IsNew:        true,
+		}
+		isNew = true
+		common.LogDebugf("[HLS] New viewer added: %s\n", sessionID)
+	}
+
+	return isNew
 }
 
 // RemoveViewer removes an HLS viewer
@@ -537,7 +569,10 @@ func (h *HLSChannel) RemoveViewer(sessionID string) {
 	h.viewersMutex.Lock()
 	defer h.viewersMutex.Unlock()
 
-	delete(h.viewers, sessionID)
+	if _, exists := h.viewers[sessionID]; exists {
+		delete(h.viewers, sessionID)
+		common.LogDebugf("[HLS] Viewer removed: %s\n", sessionID)
+	}
 }
 
 // GetViewerCount returns the number of HLS viewers
@@ -550,6 +585,79 @@ func (h *HLSChannel) GetViewerCount() int {
 	defer h.viewersMutex.RUnlock()
 
 	return len(h.viewers)
+}
+
+// startViewerCleanup runs background cleanup to remove inactive viewers
+func (h *HLSChannel) startViewerCleanup() {
+	if h == nil || h.cleanupTicker == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			h.cleanupTicker.Stop()
+			return
+		case <-h.cleanupTicker.C:
+			h.cleanupInactiveViewers()
+		}
+	}
+}
+
+// cleanupInactiveViewers removes viewers that have been inactive for more than 30 seconds
+func (h *HLSChannel) cleanupInactiveViewers() {
+	if h == nil {
+		return
+	}
+
+	h.viewersMutex.Lock()
+	defer h.viewersMutex.Unlock()
+
+	now := time.Now()
+	inactiveThreshold := 30 * time.Second
+	removedViewers := make([]string, 0)
+
+	for sessionID, viewer := range h.viewers {
+		if now.Sub(viewer.LastActivity) > inactiveThreshold {
+			removedViewers = append(removedViewers, sessionID)
+			delete(h.viewers, sessionID)
+		}
+	}
+
+	// Log cleanup results
+	if len(removedViewers) > 0 {
+		common.LogDebugf("[HLS] Cleaned up %d inactive viewers: %v\n", len(removedViewers), removedViewers)
+
+		// Remove from global stats as well
+		for _, sessionID := range removedViewers {
+			stats.removeViewer(sessionID)
+		}
+	}
+}
+
+// Close properly shuts down the HLS channel and cleanup routines
+func (h *HLSChannel) Close() {
+	if h == nil {
+		return
+	}
+
+	if h.cancel != nil {
+		h.cancel()
+	}
+
+	if h.cleanupTicker != nil {
+		h.cleanupTicker.Stop()
+	}
+
+	// Clean up all viewers
+	h.viewersMutex.Lock()
+	for sessionID := range h.viewers {
+		stats.removeViewer(sessionID)
+	}
+	h.viewers = make(map[string]*HLSViewerInfo)
+	h.viewersMutex.Unlock()
+
+	common.LogDebugf("[HLS] Channel closed and all viewers cleaned up\n")
 }
 
 // generateSegmentID creates a unique segment identifier to avoid browser caching issues

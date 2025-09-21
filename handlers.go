@@ -598,11 +598,14 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 		return
 	}
 
-	// Track viewer for HLS
+	// Track viewer for HLS - only count as new viewer on first playlist request
 	session, _ := sstore.Get(r, "moviesession")
 	if session != nil {
-		hlsChan.AddViewer(session.ID)
-		stats.addViewer(session.ID)
+		isNewViewer := hlsChan.AddViewer(session.ID)
+		if isNewViewer {
+			stats.addViewer(session.ID)
+			common.LogDebugf("[HLS] New viewer added to stats: %s\n", session.ID)
+		}
 	}
 
 	w.WriteHeader(200)

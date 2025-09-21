@@ -223,6 +223,9 @@ func TestGenerateSegmentID(t *testing.T) {
 }
 
 func TestNewHLSChannel(t *testing.T) {
+	// Initialize logging for tests
+	common.SetupLogging(common.LLDebug, "")
+
 	// Test with nil queue
 	_, err := NewHLSChannel(nil)
 	assert.Error(t, err)
@@ -249,15 +252,27 @@ func TestNewHLSChannel(t *testing.T) {
 }
 
 func TestHLSChannel_ViewerTracking(t *testing.T) {
+	// Initialize logging for tests
+	common.SetupLogging(common.LLDebug, "")
+
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)
 	require.NoError(t, err)
-	defer hlsChan.Stop()
+	defer hlsChan.Close() // Use Close() instead of Stop()
 
-	// Test adding viewers
-	hlsChan.AddViewer("user1")
-	hlsChan.AddViewer("user2")
+	// Test adding viewers - should return true for new viewers
+	isNew1 := hlsChan.AddViewer("user1")
+	assert.True(t, isNew1, "First time adding user1 should return true")
+
+	isNew2 := hlsChan.AddViewer("user2")
+	assert.True(t, isNew2, "First time adding user2 should return true")
+
 	assert.Equal(t, 2, hlsChan.GetViewerCount())
+
+	// Test adding same viewer again - should return false
+	isNew1Again := hlsChan.AddViewer("user1")
+	assert.False(t, isNew1Again, "Adding user1 again should return false")
+	assert.Equal(t, 2, hlsChan.GetViewerCount(), "Count should remain the same")
 
 	// Test removing viewers
 	hlsChan.RemoveViewer("user1")
@@ -272,6 +287,9 @@ func TestHLSChannel_ViewerTracking(t *testing.T) {
 }
 
 func TestHLSChannel_HasSegments(t *testing.T) {
+	// Initialize logging for tests
+	common.SetupLogging(common.LLDebug, "")
+
 	// Test with nil channel
 	var nilChan *HLSChannel
 	require.False(t, nilChan.HasSegments())
@@ -371,6 +389,9 @@ func TestHLSChannel_SlidingWindow(t *testing.T) {
 }
 
 func TestHLSChannel_GetPlaylist(t *testing.T) {
+	// Initialize logging for tests
+	common.SetupLogging(common.LLDebug, "")
+
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)
 	require.NoError(t, err)
