@@ -398,7 +398,7 @@ func handlePublish(conn *rtmp.Conn) {
 	if err != nil {
 		common.LogErrorf("Could not write header to streams: %v\n", err)
 	}
-	
+
 	// Initialize HLS channel for this stream immediately
 	common.LogDebugf("Creating HLS channel for stream: %s\n", streamPath)
 	hlsChan, err := NewHLSChannel(ch.que)
@@ -414,7 +414,7 @@ func handlePublish(conn *rtmp.Conn) {
 			common.LogDebugf("HLS channel started for stream: %s\n", streamPath)
 		}
 	}
-	
+
 	channels[streamPath] = ch
 	l.Unlock()
 
@@ -467,7 +467,7 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		// Detect streaming format based on device capabilities or explicit request
 		streamingFormat := GetStreamingFormat(r)
 		common.LogDebugf("Detected streaming format: %s\n", streamingFormat)
-		
+
 		// Also check if this is an HLS playlist request (for native iOS)
 		if streamingFormat == "hls" || strings.HasSuffix(r.URL.Path, ".m3u8") || r.URL.Query().Get("format") == "hls" {
 			common.LogDebugf("Routing to HLS handler\n")
@@ -520,7 +520,7 @@ func handleFLVStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 
 func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 	common.LogDebugf("handleHLSStream called for path: %s\n", r.URL.Path)
-	
+
 	if ch == nil {
 		common.LogDebugf("handleHLSStream: channel is nil\n")
 		w.WriteHeader(http.StatusNoContent)
@@ -535,7 +535,7 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		
+
 		common.LogDebugf("handleHLSStream: initializing HLS channel\n")
 		hlsChan, err := NewHLSChannelWithDeviceOptimization(ch.que, r)
 		if err != nil {
@@ -569,7 +569,7 @@ func handleHLSStream(w http.ResponseWriter, r *http.Request, ch *Channel) {
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChannel) {
 	common.LogDebugf("handleHLSPlaylist called\n")
-	
+
 	if hlsChan == nil {
 		common.LogDebugf("handleHLSPlaylist: hlsChan is nil\n")
 		w.WriteHeader(http.StatusNotFound)
@@ -584,11 +584,11 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 
 	playlist := hlsChan.GetPlaylist()
 	common.LogDebugf("handleHLSPlaylist: playlist length = %d\n", len(playlist))
-	
+
 	// Check if playlist has segments rather than just being empty string
 	hasSegments := hlsChan.HasSegments()
 	common.LogDebugf("handleHLSPlaylist: hasSegments = %v\n", hasSegments)
-	
+
 	if playlist == "" || !hasSegments {
 		common.LogDebugf("handleHLSPlaylist: playlist is empty or has no segments\n")
 		// Return 503 (Service Unavailable) for empty playlists to indicate segments are still being generated
@@ -656,7 +656,7 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	streamName := pathParts[1]
-	
+
 	l.RLock()
 	ch := channels[streamName]
 	l.RUnlock()
@@ -704,9 +704,9 @@ func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
 	// Extract segment name from URL like /live/segment_N.ts
 	path := strings.Trim(r.URL.Path, "/")
 	pathParts := strings.Split(path, "/")
-	
+
 	common.LogDebugf("handleLiveSegments: path=%s, pathParts=%v", path, pathParts)
-	
+
 	if len(pathParts) < 2 {
 		common.LogDebugf("handleLiveSegments: invalid path, not enough parts")
 		w.WriteHeader(http.StatusBadRequest)
@@ -722,7 +722,7 @@ func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
 
 	// Use "live" as the default stream name for /live/ requests
 	streamName := "live"
-	
+
 	l.RLock()
 	ch := channels[streamName]
 	l.RUnlock()
@@ -741,7 +741,7 @@ func handleLiveSegments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	common.LogDebugf("handleLiveSegments: requesting segment %s from HLS channel", segmentName)
-	
+
 	// Handle the segment request
 	handleHLSSegment(w, r, ch.hlsChan)
 }

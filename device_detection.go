@@ -61,7 +61,7 @@ func DetectDeviceCapabilities(r *http.Request) DeviceCapabilities {
 	}
 
 	userAgent := r.Header.Get("User-Agent")
-	
+
 	capabilities := DeviceCapabilities{
 		UserAgent: userAgent,
 	}
@@ -121,7 +121,7 @@ func ShouldUseHLS(r *http.Request) bool {
 	}
 
 	capabilities := DetectDeviceCapabilities(r)
-	
+
 	// Use HLS for iOS devices as they have native support and better performance
 	if capabilities.IsIOS {
 		return true
@@ -163,27 +163,27 @@ func IsHLSPlaylistRequest(r *http.Request) bool {
 	}
 
 	path := strings.ToLower(r.URL.Path)
-	
+
 	// Check if it's explicitly an m3u8 file
 	if strings.HasSuffix(path, ".m3u8") {
 		return true
 	}
-	
+
 	// Check if it contains playlist in the path
 	if strings.Contains(path, "playlist") {
 		return true
 	}
-	
+
 	// Check Accept header for HLS content type
 	if r.Header.Get("Accept") == "application/vnd.apple.mpegurl" {
 		return true
 	}
-	
+
 	// Check if format=hls parameter is present (for /live?format=hls)
 	if r.URL.Query().Get("format") == "hls" {
 		return true
 	}
-	
+
 	return false
 }
 

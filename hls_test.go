@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/nareix/joy4/av/pubsub"
+	"github.com/neatchee/MovieNight/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/neatchee/MovieNight/common"
 )
 
 func TestDetectDeviceCapabilities(t *testing.T) {
@@ -67,7 +67,7 @@ func TestDetectDeviceCapabilities(t *testing.T) {
 
 func TestDetectDeviceCapabilities_NilRequest(t *testing.T) {
 	capabilities := DetectDeviceCapabilities(nil)
-	
+
 	assert.False(t, capabilities.IsIOS)
 	assert.False(t, capabilities.SupportsHLS)
 	assert.True(t, capabilities.SupportsMPEGTS)
@@ -77,10 +77,10 @@ func TestDetectDeviceCapabilities_NilRequest(t *testing.T) {
 
 func TestShouldUseHLS(t *testing.T) {
 	tests := []struct {
-		name      string
-		userAgent string
+		name       string
+		userAgent  string
 		queryParam string
-		expected  bool
+		expected   bool
 	}{
 		{
 			name:      "iOS device should use HLS",
@@ -106,7 +106,7 @@ func TestShouldUseHLS(t *testing.T) {
 			if tt.queryParam != "" {
 				url += "?format=" + tt.queryParam
 			}
-			
+
 			req := httptest.NewRequest("GET", url, nil)
 			req.Header.Set("User-Agent", tt.userAgent)
 
@@ -133,12 +133,12 @@ func TestIsValidSegmentURI(t *testing.T) {
 		{"/live/segment_0.ts", true},
 		{"/live/segment_123.ts", true},
 		{"/hls/stream/segment_999.ts", true},
-		
+
 		// New UUID format
 		{"segment_a1b2c3d4e5f6789012345678abcdef90.ts", true},
 		{"/live/segment_1234567890abcdef1234567890abcdef.ts", true},
 		{"segment_ABCDEF1234567890abcdef1234567890.ts", true},
-		
+
 		// Invalid formats
 		{"invalid.ts", false},
 		{"segment_0.mp4", false},
@@ -148,7 +148,7 @@ func TestIsValidSegmentURI(t *testing.T) {
 		{"/live/invalid.ts", false},
 		{"/live/segment_.ts", false},
 		{"segment_invalid_uuid.ts", false}, // Invalid UUID length
-		{"segment_xyz123.ts", false}, // Invalid hex characters
+		{"segment_xyz123.ts", false},       // Invalid hex characters
 	}
 
 	for _, tt := range tests {
@@ -172,11 +172,11 @@ func TestParseSequenceFromURI(t *testing.T) {
 		{"/live/segment_0.ts", 0, false},
 		{"/live/segment_123.ts", 123, false},
 		{"/hls/stream/segment_999.ts", 999, false},
-		
+
 		// UUID format (should return error as sequence not available)
 		{"segment_a1b2c3d4e5f6789012345678abcdef90.ts", 0, true},
 		{"/live/segment_1234567890abcdef1234567890abcdef.ts", 0, true},
-		
+
 		// Invalid formats
 		{"invalid.ts", 0, true},
 		{"segment_.ts", 0, true},
@@ -188,7 +188,7 @@ func TestParseSequenceFromURI(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.uri, func(t *testing.T) {
 			seq, err := ParseSequenceFromURI(tt.uri)
-			
+
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
@@ -203,20 +203,20 @@ func TestGenerateSegmentID(t *testing.T) {
 	// Test that generateSegmentID produces valid UUID format
 	id1 := generateSegmentID()
 	id2 := generateSegmentID()
-	
+
 	// Should be 32 hex characters
 	assert.Len(t, id1, 32)
 	assert.Len(t, id2, 32)
-	
+
 	// Should be different each time
 	assert.NotEqual(t, id1, id2)
-	
+
 	// Should contain only hex characters
 	for _, c := range id1 {
-		assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), 
+		assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'),
 			"ID should contain only hex characters, got: %c", c)
 	}
-	
+
 	// Test that generated IDs create valid segment URIs
 	uri := fmt.Sprintf("/live/segment_%s.ts", id1)
 	assert.True(t, IsValidSegmentURI(uri))
@@ -275,17 +275,17 @@ func TestHLSChannel_HasSegments(t *testing.T) {
 	// Test with nil channel
 	var nilChan *HLSChannel
 	require.False(t, nilChan.HasSegments())
-	
+
 	// Create HLS channel
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)
 	require.NoError(t, err)
 	require.NotNil(t, hlsChan)
 	defer hlsChan.Stop()
-	
+
 	// Initially should have no segments
 	require.False(t, hlsChan.HasSegments())
-	
+
 	// Add a segment manually for testing
 	hlsChan.mutex.Lock()
 	hlsChan.segments = append(hlsChan.segments, HLSSegment{
@@ -295,7 +295,7 @@ func TestHLSChannel_HasSegments(t *testing.T) {
 		Sequence: 0,
 	})
 	hlsChan.mutex.Unlock()
-	
+
 	// Now should have segments
 	require.True(t, hlsChan.HasSegments())
 }
@@ -303,26 +303,26 @@ func TestHLSChannel_HasSegments(t *testing.T) {
 func TestHLSChannel_SlidingWindow(t *testing.T) {
 	// Setup logging for test
 	common.SetupLogging(common.LLError, "/dev/null")
-	
+
 	// Create HLS channel with small window for testing
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)
 	require.NoError(t, err)
 	require.NotNil(t, hlsChan)
 	defer hlsChan.Stop()
-	
+
 	// Manually set small maxSegments for testing
 	hlsChan.maxSegments = 3
-	
+
 	// Test adding segments beyond window size
 	testData := []byte("test segment data")
-	
+
 	// Add segments one by one and verify sliding window behavior
 	for i := 0; i < 5; i++ {
 		// Create segment manually for testing
 		currentSeq := hlsChan.sequenceNumber
 		hlsChan.sequenceNumber++
-		
+
 		segmentURI := fmt.Sprintf("/live/segment_%d.ts", currentSeq)
 		durationSeconds := 2.0
 
@@ -335,38 +335,38 @@ func TestHLSChannel_SlidingWindow(t *testing.T) {
 
 		// Add segment with proper sliding window management
 		hlsChan.addGeneratedSegment(segment)
-		
+
 		// Check that we never exceed maxSegments in our local storage
 		hlsChan.mutex.RLock()
 		segmentCount := len(hlsChan.segments)
 		playlistCount := int(hlsChan.playlist.Count())
 		hlsChan.mutex.RUnlock()
-		
+
 		expectedSegments := i + 1
 		if expectedSegments > hlsChan.maxSegments {
 			expectedSegments = hlsChan.maxSegments
 		}
-		
-		assert.LessOrEqual(t, segmentCount, hlsChan.maxSegments, 
+
+		assert.LessOrEqual(t, segmentCount, hlsChan.maxSegments,
 			"Local segment count should not exceed maxSegments")
-		assert.LessOrEqual(t, playlistCount, hlsChan.maxSegments, 
+		assert.LessOrEqual(t, playlistCount, hlsChan.maxSegments,
 			"Playlist count should not exceed maxSegments")
-		assert.Equal(t, expectedSegments, segmentCount, 
+		assert.Equal(t, expectedSegments, segmentCount,
 			"Local segment count should match expected after sliding window")
-		
-		t.Logf("Added segment %d: local_count=%d, playlist_count=%d, max=%d", 
+
+		t.Logf("Added segment %d: local_count=%d, playlist_count=%d, max=%d",
 			i, segmentCount, playlistCount, hlsChan.maxSegments)
 	}
-	
+
 	// Final verification: should have exactly maxSegments
 	hlsChan.mutex.RLock()
 	finalSegmentCount := len(hlsChan.segments)
 	finalPlaylistCount := int(hlsChan.playlist.Count())
 	hlsChan.mutex.RUnlock()
-	
-	assert.Equal(t, hlsChan.maxSegments, finalSegmentCount, 
+
+	assert.Equal(t, hlsChan.maxSegments, finalSegmentCount,
 		"Should have exactly maxSegments in local storage")
-	assert.Equal(t, hlsChan.maxSegments, finalPlaylistCount, 
+	assert.Equal(t, hlsChan.maxSegments, finalPlaylistCount,
 		"Should have exactly maxSegments in playlist")
 }
 

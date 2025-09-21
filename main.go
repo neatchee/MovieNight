@@ -154,8 +154,8 @@ func run(args args) {
 	router.HandleFunc("/emotes", wrapAuth(handleEmoteTemplate))
 
 	router.HandleFunc("/live", wrapAuth(handleLive))
-	router.HandleFunc("/live/", wrapAuth(handleLiveSegments))   // HLS segments from /live/ path
-	router.HandleFunc("/hls/", wrapAuth(handleHLS))        // HLS playlist and segments
+	router.HandleFunc("/live/", wrapAuth(handleLiveSegments)) // HLS segments from /live/ path
+	router.HandleFunc("/hls/", wrapAuth(handleHLS))           // HLS playlist and segments
 	router.HandleFunc("/", wrapAuth(handleDefault))
 
 	httpServer := &http.Server{
