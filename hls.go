@@ -21,26 +21,26 @@ import (
 // HLSConfig represents configuration for HLS streaming
 type HLSConfig struct {
 	SegmentDuration       time.Duration // Duration of each segment
-	MaxSegments          int           // Maximum number of segments to keep in memory
-	TargetDuration       time.Duration // Target duration for playlist
-	BitrateReduction     float64       // Bitrate reduction factor for HLS (0.0-1.0)
-	EnableLowLatency     bool          // Enable low latency optimizations
-	MaxConcurrentSegments int          // Maximum number of segments to generate concurrently
-	SegmentBufferSize    int           // Buffer size for segment data
-	QualityAdaptation    bool          // Enable adaptive quality based on device capabilities
+	MaxSegments           int           // Maximum number of segments to keep in memory
+	TargetDuration        time.Duration // Target duration for playlist
+	BitrateReduction      float64       // Bitrate reduction factor for HLS (0.0-1.0)
+	EnableLowLatency      bool          // Enable low latency optimizations
+	MaxConcurrentSegments int           // Maximum number of segments to generate concurrently
+	SegmentBufferSize     int           // Buffer size for segment data
+	QualityAdaptation     bool          // Enable adaptive quality based on device capabilities
 }
 
 // DefaultHLSConfig returns the default HLS configuration
 func DefaultHLSConfig() HLSConfig {
 	return HLSConfig{
 		SegmentDuration:       4 * time.Second, // Shorter segments for lower latency
-		MaxSegments:          6,                 // Fewer segments for faster processing
-		TargetDuration:       4 * time.Second,  // Match segment duration
-		BitrateReduction:     0.7,              // 30% reduction for HLS efficiency
-		EnableLowLatency:     true,
-		MaxConcurrentSegments: 4,               // More concurrent processing
-		SegmentBufferSize:    512 * 1024,       // Smaller buffer for faster processing
-		QualityAdaptation:    true,
+		MaxSegments:           6,               // Fewer segments for faster processing
+		TargetDuration:        4 * time.Second, // Match segment duration
+		BitrateReduction:      0.7,             // 30% reduction for HLS efficiency
+		EnableLowLatency:      true,
+		MaxConcurrentSegments: 4,          // More concurrent processing
+		SegmentBufferSize:     512 * 1024, // Smaller buffer for faster processing
+		QualityAdaptation:     true,
 	}
 }
 
@@ -58,7 +58,7 @@ func GetQualitySettings(capabilities DeviceCapabilities) HLSQualitySettings {
 		if capabilities.IsMobile {
 			// iOS Mobile - optimize for battery and bandwidth
 			return HLSQualitySettings{
-				BitrateMultiplier: 0.7,  // 30% reduction
+				BitrateMultiplier: 0.7, // 30% reduction
 				Resolution:        "720p",
 				FrameRate:         30,
 				KeyFrameInterval:  2,
@@ -91,21 +91,30 @@ func GetQualitySettings(capabilities DeviceCapabilities) HLSQualitySettings {
 	}
 }
 
+// HLSViewerInfo represents viewer session information with activity tracking
+type HLSViewerInfo struct {
+	SessionID    string
+	LastActivity time.Time
+	FirstSeen    time.Time
+	IsNew        bool // True if this is the first playlist request for this session
+}
+
 // HLSChannel represents an HLS stream with playlist and segments
 type HLSChannel struct {
-	que              *pubsub.Queue
-	playlist         *m3u8.MediaPlaylist
-	segments         []HLSSegment
-	targetDuration   time.Duration
-	sequenceNumber   uint64
-	mutex            sync.RWMutex
-	ctx              context.Context
-	cancel           context.CancelFunc
-	segmentDuration  time.Duration
-	maxSegments      int
-	viewers          map[string]int // Track HLS viewers
-	viewersMutex     sync.RWMutex
-	config           HLSConfig
+	que             *pubsub.Queue
+	playlist        *m3u8.MediaPlaylist
+	segments        []HLSSegment
+	targetDuration  time.Duration
+	sequenceNumber  uint64
+	mutex           sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	segmentDuration time.Duration
+	maxSegments     int
+	viewers         map[string]*HLSViewerInfo // Track HLS viewers with timestamps
+	viewersMutex    sync.RWMutex
+	config          HLSConfig
+	cleanupTicker   *time.Ticker // Background cleanup ticker
 }
 
 // HLSSegment represents a single HLS segment
@@ -123,9 +132,9 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	config := DefaultHLSConfig()
-	
+
 	// Create playlist with sliding window for live streaming
 	// Important: Use the proper pattern for sliding window
 	windowSize := uint(config.MaxSegments)
@@ -136,9 +145,9 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 	}
 
 	// Set playlist properties for optimal HLS performance and sliding window
-	playlist.SetVersion(6) // HLS version 6 for better live streaming support
+	playlist.SetVersion(6)  // HLS version 6 for better live streaming support
 	playlist.Closed = false // Keep playlist open for live streaming (sliding window)
-	
+
 	hls := &HLSChannel{
 		que:             que,
 		playlist:        playlist,
@@ -149,9 +158,13 @@ func NewHLSChannel(que *pubsub.Queue) (*HLSChannel, error) {
 		cancel:          cancel,
 		segmentDuration: config.SegmentDuration,
 		maxSegments:     config.MaxSegments,
-		viewers:         make(map[string]int),
+		viewers:         make(map[string]*HLSViewerInfo),
 		config:          config,
+		cleanupTicker:   time.NewTicker(10 * time.Second), // Run cleanup every 10 seconds
 	}
+
+	// Start background cleanup routine
+	go hls.startViewerCleanup()
 
 	return hls, nil
 }
@@ -169,28 +182,28 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 	}
 
 	qualitySettings := GetQualitySettings(capabilities)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	config := DefaultHLSConfig()
-	
+
 	// Apply device-specific optimizations
 	config.BitrateReduction = qualitySettings.BitrateMultiplier
-	
+
 	if capabilities.IsIOS && capabilities.IsMobile {
 		// Optimize for iOS mobile devices - prioritize low latency
-		config.SegmentDuration = 3 * time.Second  // Very short segments for low latency
-		config.MaxSegments = 5                     // Minimal segments for fast processing
+		config.SegmentDuration = 3 * time.Second // Very short segments for low latency
+		config.MaxSegments = 5                   // Minimal segments for fast processing
 		config.EnableLowLatency = true
-		config.MaxConcurrentSegments = 3          // Balanced concurrency for mobile
+		config.MaxConcurrentSegments = 3 // Balanced concurrency for mobile
 	} else if capabilities.IsAndroid {
 		// Optimize for Android devices
-		config.SegmentDuration = 4 * time.Second  // Short segments for good performance
+		config.SegmentDuration = 4 * time.Second // Short segments for good performance
 		config.MaxSegments = 6
 		config.MaxConcurrentSegments = 3
 	} else {
 		// Desktop optimization - can handle slightly longer segments
-		config.SegmentDuration = 4 * time.Second  // Still short for low latency
+		config.SegmentDuration = 4 * time.Second // Still short for low latency
 		config.MaxSegments = 8
 		config.MaxConcurrentSegments = 5
 	}
@@ -203,8 +216,8 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 		return nil, fmt.Errorf("failed to create optimized playlist: %w", err)
 	}
 	playlist.SetVersion(6)
-	playlist.Closed = false  // Keep playlist open for live streaming (sliding window)
-	
+	playlist.Closed = false // Keep playlist open for live streaming (sliding window)
+
 	hls := &HLSChannel{
 		que:             que,
 		playlist:        playlist,
@@ -215,11 +228,15 @@ func NewHLSChannelWithDeviceOptimization(que *pubsub.Queue, r *http.Request) (*H
 		cancel:          cancel,
 		segmentDuration: config.SegmentDuration,
 		maxSegments:     config.MaxSegments,
-		viewers:         make(map[string]int),
+		viewers:         make(map[string]*HLSViewerInfo),
 		config:          config,
+		cleanupTicker:   time.NewTicker(10 * time.Second), // Run cleanup every 10 seconds
 	}
 
-	common.LogDebugf("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n", 
+	// Start background cleanup routine
+	go hls.startViewerCleanup()
+
+	common.LogDebugf("Created HLS channel optimized for device: iOS=%v, Mobile=%v, BitrateReduction=%.2f\n",
 		capabilities.IsIOS, capabilities.IsMobile, config.BitrateReduction)
 
 	return hls, nil
@@ -237,11 +254,7 @@ func (h *HLSChannel) Start() error {
 
 // Stop stops HLS segment generation
 func (h *HLSChannel) Stop() {
-	if h != nil {
-		if h.cancel != nil {
-			h.cancel()
-		}
-	}
+	h.Close()
 }
 
 // generateSegments continuously generates HLS segments from the stream using proper TS muxing
@@ -318,10 +331,10 @@ func (h *HLSChannel) generateSegments() {
 func (h *HLSChannel) startNewSegment(buffer *bytes.Buffer, muxer **ts.Muxer, startTime *time.Time) {
 	buffer.Reset()
 	*startTime = time.Now()
-	
+
 	// Create new TS muxer that writes to our buffer
 	newMuxer := ts.NewMuxer(buffer)
-	
+
 	// Get the streams from the original queue to initialize the muxer
 	if h.que != nil {
 		// Get stream headers from the queue
@@ -343,9 +356,9 @@ func (h *HLSChannel) startNewSegment(buffer *bytes.Buffer, muxer **ts.Muxer, sta
 			}
 		}
 	}
-	
+
 	*muxer = newMuxer
-	
+
 	common.LogDebugf("Started new HLS segment\n")
 }
 
@@ -376,8 +389,8 @@ func (h *HLSChannel) finalizeSegment(buffer *bytes.Buffer, duration time.Duratio
 
 	// Add segment with proper sliding window management
 	h.addGeneratedSegment(segment)
-	
-	common.LogDebugf("Finalized HLS segment %d with %d bytes, duration %.2fs\n", 
+
+	common.LogDebugf("Finalized HLS segment %d with %d bytes, duration %.2fs\n",
 		currentSeq, len(segmentData), durationSeconds)
 }
 
@@ -393,7 +406,7 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 
 	// Add segment to our local list with sliding window management
 	h.segments = append(h.segments, segment)
-	
+
 	// Remove old segments if we exceed max (manual sliding window for our data)
 	if len(h.segments) > h.maxSegments {
 		// Remove oldest segments to maintain window size
@@ -417,28 +430,28 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		}
 		newPlaylist.SetVersion(6)
 		newPlaylist.Closed = false
-		
+
 		// Add only the segments that should remain (excluding the oldest one)
 		segmentsToKeep := h.maxSegments - 1 // Leave room for the new segment
 		startIdx := len(h.segments) - segmentsToKeep
 		if startIdx < 0 {
 			startIdx = 0
 		}
-		
+
 		// Set the media sequence to match the first segment that will be in the new playlist
 		if startIdx < len(h.segments) {
 			newPlaylist.SeqNo = h.segments[startIdx].Sequence
 		}
-		
+
 		for i := startIdx; i < len(h.segments)-1; i++ { // -1 because we haven't added the new segment yet
 			seg := h.segments[i]
 			newPlaylist.Append(seg.URI, seg.Duration, "")
 		}
-		
+
 		// Replace the old playlist
 		h.playlist = newPlaylist
 	}
-	
+
 	// Now add the new segment
 	h.playlist.Append(segment.URI, segment.Duration, "")
 
@@ -449,7 +462,7 @@ func (h *HLSChannel) addGeneratedSegment(segment HLSSegment) {
 		h.playlist.TargetDuration = uint(segment.Duration)
 	}
 
-	common.LogDebugf("Added generated HLS segment %d with duration %.2fs (playlist count: %d/%d)\n", 
+	common.LogDebugf("Added generated HLS segment %d with duration %.2fs (playlist count: %d/%d)\n",
 		segment.Sequence, segment.Duration, h.playlist.Count(), h.maxSegments)
 }
 
@@ -464,7 +477,7 @@ func (h *HLSChannel) GetPlaylist() string {
 
 	// Set final playlist properties
 	h.playlist.TargetDuration = uint(h.targetDuration.Seconds())
-	
+
 	return h.playlist.String()
 }
 
@@ -516,16 +529,35 @@ func (h *HLSChannel) GetSegmentByURI(uri string) ([]byte, error) {
 	return nil, fmt.Errorf("segment with URI %s not found", uri)
 }
 
-// AddViewer adds an HLS viewer for tracking
-func (h *HLSChannel) AddViewer(sessionID string) {
+// AddViewer adds an HLS viewer for tracking, returns true if this is a new viewer
+func (h *HLSChannel) AddViewer(sessionID string) bool {
 	if h == nil {
-		return
+		return false
 	}
 
 	h.viewersMutex.Lock()
 	defer h.viewersMutex.Unlock()
 
-	h.viewers[sessionID] = 1
+	now := time.Now()
+	isNew := false
+
+	if existing, exists := h.viewers[sessionID]; exists {
+		// Update last activity for existing viewer
+		existing.LastActivity = now
+		existing.IsNew = false
+	} else {
+		// New viewer
+		h.viewers[sessionID] = &HLSViewerInfo{
+			SessionID:    sessionID,
+			LastActivity: now,
+			FirstSeen:    now,
+			IsNew:        true,
+		}
+		isNew = true
+		common.LogInfof("[HLS] New viewer added: %s\n", sessionID)
+	}
+
+	return isNew
 }
 
 // RemoveViewer removes an HLS viewer
@@ -537,7 +569,10 @@ func (h *HLSChannel) RemoveViewer(sessionID string) {
 	h.viewersMutex.Lock()
 	defer h.viewersMutex.Unlock()
 
-	delete(h.viewers, sessionID)
+	if _, exists := h.viewers[sessionID]; exists {
+		delete(h.viewers, sessionID)
+		common.LogInfof("[HLS] Viewer removed: %s\n", sessionID)
+	}
 }
 
 // GetViewerCount returns the number of HLS viewers
@@ -552,6 +587,79 @@ func (h *HLSChannel) GetViewerCount() int {
 	return len(h.viewers)
 }
 
+// startViewerCleanup runs background cleanup to remove inactive viewers
+func (h *HLSChannel) startViewerCleanup() {
+	if h == nil || h.cleanupTicker == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			h.cleanupTicker.Stop()
+			return
+		case <-h.cleanupTicker.C:
+			h.cleanupInactiveViewers()
+		}
+	}
+}
+
+// cleanupInactiveViewers removes viewers that have been inactive for more than 30 seconds
+func (h *HLSChannel) cleanupInactiveViewers() {
+	if h == nil {
+		return
+	}
+
+	h.viewersMutex.Lock()
+	defer h.viewersMutex.Unlock()
+
+	now := time.Now()
+	inactiveThreshold := 30 * time.Second
+	removedViewers := make([]string, 0)
+
+	for sessionID, viewer := range h.viewers {
+		if now.Sub(viewer.LastActivity) > inactiveThreshold {
+			removedViewers = append(removedViewers, sessionID)
+			delete(h.viewers, sessionID)
+		}
+	}
+
+	// Log cleanup results
+	if len(removedViewers) > 0 {
+		common.LogInfof("[HLS] Cleaned up %d inactive viewers: %v\n", len(removedViewers), removedViewers)
+
+		// Remove from global stats as well
+		for _, sessionID := range removedViewers {
+			stats.removeViewer(sessionID)
+		}
+	}
+}
+
+// Close properly shuts down the HLS channel and cleanup routines
+func (h *HLSChannel) Close() {
+	if h == nil {
+		return
+	}
+
+	if h.cancel != nil {
+		h.cancel()
+	}
+
+	if h.cleanupTicker != nil {
+		h.cleanupTicker.Stop()
+	}
+
+	// Clean up all viewers
+	h.viewersMutex.Lock()
+	for sessionID := range h.viewers {
+		stats.removeViewer(sessionID)
+	}
+	h.viewers = make(map[string]*HLSViewerInfo)
+	h.viewersMutex.Unlock()
+
+	common.LogInfof("[HLS] Channel closed and all viewers cleaned up\n")
+}
+
 // generateSegmentID creates a unique segment identifier to avoid browser caching issues
 // Uses UUID4 format for maximum collision avoidance across service restarts
 func generateSegmentID() string {
@@ -562,11 +670,11 @@ func generateSegmentID() string {
 		// Fallback to timestamp-based ID if crypto/rand fails
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	
+
 	// Set version (4) and variant bits for proper UUID4 format
 	uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
 	uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant 10
-	
+
 	// Format as UUID string (shortened for segment names)
 	return fmt.Sprintf("%x%x%x%x%x%x%x%x",
 		uuid[0:2], uuid[2:4], uuid[4:6], uuid[6:8],
@@ -578,19 +686,19 @@ func IsValidSegmentURI(uri string) bool {
 	if uri == "" {
 		return false
 	}
-	
+
 	// Check if it's a .ts segment
 	if !strings.HasSuffix(uri, ".ts") {
 		return false
 	}
-	
+
 	// Extract the filename from the URI (handle both relative and absolute paths)
 	filename := uri
 	if strings.Contains(uri, "/") {
 		parts := strings.Split(uri, "/")
 		filename = parts[len(parts)-1]
 	}
-	
+
 	// Check if filename matches segment pattern
 	if !strings.HasPrefix(filename, "segment_") {
 		return false
@@ -604,13 +712,13 @@ func IsValidSegmentURI(uri string) bool {
 	}
 
 	identifier := parts[1]
-	
+
 	// Support both old numeric format (for backward compatibility) and new UUID format
 	if _, err := strconv.ParseUint(identifier, 10, 64); err == nil {
 		// Valid numeric sequence (legacy format)
 		return true
 	}
-	
+
 	// Check for UUID format: 32 hex characters
 	if len(identifier) == 32 {
 		for _, c := range identifier {
@@ -620,7 +728,7 @@ func IsValidSegmentURI(uri string) bool {
 		}
 		return true
 	}
-	
+
 	return false
 }
 
@@ -646,12 +754,12 @@ func ParseSequenceFromURI(uri string) (uint64, error) {
 	}
 
 	identifier := parts[1]
-	
+
 	// Try to parse as numeric sequence (legacy format)
 	if sequence, err := strconv.ParseUint(identifier, 10, 64); err == nil {
 		return sequence, nil
 	}
-	
+
 	// For UUID-based segments, sequence number is not available from URI
 	return 0, fmt.Errorf("sequence number not available for UUID-based segment URI: %s", uri)
 }

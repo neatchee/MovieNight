@@ -1,10 +1,11 @@
-module github.com/zorchenhimer/MovieNight
+module github.com/neatchee/MovieNight
 
 go 1.21
 
 toolchain go1.24.7
 
 require (
+	github.com/Eyevinn/hls-m3u8 v0.6.0
 	github.com/alexflint/go-arg v1.4.3
 	github.com/gorilla/sessions v1.2.1
 	github.com/gorilla/websocket v1.5.0
@@ -15,7 +16,6 @@ require (
 )
 
 require (
-	github.com/Eyevinn/hls-m3u8 v0.6.0 // indirect
 	github.com/alexflint/go-scalar v1.2.0 // indirect
 	github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
