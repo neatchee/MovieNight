@@ -554,7 +554,7 @@ func (h *HLSChannel) AddViewer(sessionID string) bool {
 			IsNew:        true,
 		}
 		isNew = true
-		common.LogDebugf("[HLS] New viewer added: %s\n", sessionID)
+		common.LogInfof("[HLS] New viewer added: %s\n", sessionID)
 	}
 
 	return isNew
@@ -571,7 +571,7 @@ func (h *HLSChannel) RemoveViewer(sessionID string) {
 
 	if _, exists := h.viewers[sessionID]; exists {
 		delete(h.viewers, sessionID)
-		common.LogDebugf("[HLS] Viewer removed: %s\n", sessionID)
+		common.LogInfof("[HLS] Viewer removed: %s\n", sessionID)
 	}
 }
 
@@ -626,7 +626,7 @@ func (h *HLSChannel) cleanupInactiveViewers() {
 
 	// Log cleanup results
 	if len(removedViewers) > 0 {
-		common.LogDebugf("[HLS] Cleaned up %d inactive viewers: %v\n", len(removedViewers), removedViewers)
+		common.LogInfof("[HLS] Cleaned up %d inactive viewers: %v\n", len(removedViewers), removedViewers)
 
 		// Remove from global stats as well
 		for _, sessionID := range removedViewers {
@@ -657,7 +657,7 @@ func (h *HLSChannel) Close() {
 	h.viewers = make(map[string]*HLSViewerInfo)
 	h.viewersMutex.Unlock()
 
-	common.LogDebugf("[HLS] Channel closed and all viewers cleaned up\n")
+	common.LogInfof("[HLS] Channel closed and all viewers cleaned up\n")
 }
 
 // generateSegmentID creates a unique segment identifier to avoid browser caching issues

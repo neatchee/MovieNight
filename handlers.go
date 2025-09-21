@@ -400,7 +400,7 @@ func handlePublish(conn *rtmp.Conn) {
 	}
 
 	// Initialize HLS channel for this stream immediately
-	common.LogDebugf("Creating HLS channel for stream: %s\n", streamPath)
+	common.LogInfof("Creating HLS channel for stream: %s\n", streamPath)
 	hlsChan, err := NewHLSChannel(ch.que)
 	if err != nil {
 		common.LogErrorf("Failed to create HLS channel: %v\n", err)
@@ -595,7 +595,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 		isNewViewer := hlsChan.AddViewer(session.ID)
 		if isNewViewer {
 			stats.addViewer(session.ID)
-			common.LogDebugf("[HLS] New viewer added to stats: %s\n", session.ID)
+			common.LogInfof("[HLS] New viewer added to stats: %s\n", session.ID)
 		}
 	}
 
