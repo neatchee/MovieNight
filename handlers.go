@@ -589,16 +589,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 	hasSegments := hlsChan.HasSegments()
 	common.LogDebugf("handleHLSPlaylist: hasSegments = %v\n", hasSegments)
 
-	if playlist == "" || !hasSegments {
-		common.LogDebugf("handleHLSPlaylist: playlist is empty or has no segments\n")
-		// Return 503 (Service Unavailable) for empty playlists to indicate segments are still being generated
-		// This is more appropriate than 404 and allows clients to retry
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"))
-		return
-	}
-
-	// Track viewer for HLS - only count as new viewer on first playlist request
+	// Track viewer for HLS - count viewers even when waiting for segments
 	session, _ := sstore.Get(r, "moviesession")
 	if session != nil {
 		isNewViewer := hlsChan.AddViewer(session.ID)
@@ -606,6 +597,15 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, hlsChan *HLSChann
 			stats.addViewer(session.ID)
 			common.LogDebugf("[HLS] New viewer added to stats: %s\n", session.ID)
 		}
+	}
+
+	if playlist == "" || !hasSegments {
+		common.LogDebugf("handleHLSPlaylist: playlist is empty or has no segments\n")
+		// Return 503 (Service Unavailable) for empty playlists to indicate segments are still being generated
+		// This is more appropriate than 404 and allows clients to retry
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"))
+		return
 	}
 
 	w.WriteHeader(200)

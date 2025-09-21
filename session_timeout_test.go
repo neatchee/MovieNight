@@ -31,7 +31,7 @@ func TestHLSChannel_ViewerTimeout(t *testing.T) {
 
 	// Manually trigger cleanup (to avoid waiting 30 seconds in test)
 	hlsChan.cleanupInactiveViewers()
-	
+
 	// Should still have viewer since it's been active recently
 	assert.Equal(t, 1, hlsChan.GetViewerCount())
 
@@ -44,7 +44,7 @@ func TestHLSChannel_ViewerTimeout(t *testing.T) {
 
 	// Trigger cleanup again
 	hlsChan.cleanupInactiveViewers()
-	
+
 	// Should now have no viewers due to timeout
 	assert.Equal(t, 0, hlsChan.GetViewerCount())
 }
@@ -87,7 +87,7 @@ func TestHLSChannel_BackgroundCleanup(t *testing.T) {
 	queue := pubsub.NewQueue()
 	hlsChan, err := NewHLSChannel(queue)
 	require.NoError(t, err)
-	
+
 	// Add a viewer
 	hlsChan.AddViewer("test-session")
 	assert.Equal(t, 1, hlsChan.GetViewerCount())
